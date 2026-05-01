@@ -14,6 +14,7 @@ pub struct LagrangeBasis<T: Scalar> {
     num_qpoints: usize,
     q_ref: Vec<T>,
     weights: Vec<T>,
+    weights_1d: Vec<T>,
     interp: Vec<T>,
     grad: Vec<T>,
 }
@@ -46,6 +47,10 @@ impl<T: Scalar> LagrangeBasis<T> {
         };
         let num_dof = p.pow(dim as u32);
         let num_qpoints = q.pow(dim as u32);
+        let weights_1d: Vec<T> = weights_f64
+            .iter()
+            .map(|&x| to_scalar::<T>(x))
+            .collect::<ReedResult<Vec<T>>>()?;
         let q_ref_tensor = build_tensor_qref::<T>(&q_ref_f64, dim)?;
         let weights_tensor = build_tensor_weights::<T>(&weights_f64, dim)?;
 
@@ -61,6 +66,7 @@ impl<T: Scalar> LagrangeBasis<T> {
             num_qpoints,
             q_ref: q_ref_tensor,
             weights: weights_tensor,
+            weights_1d,
             interp,
             grad,
         })
@@ -395,6 +401,10 @@ impl<T: Scalar> BasisTrait<T> for LagrangeBasis<T> {
 
     fn q_ref(&self) -> &[T] {
         &self.q_ref
+    }
+
+    fn tensor_fdm_1d_data(&self) -> Option<(&[T], &[T], &[T], usize, usize)> {
+        Some((&self.interp, &self.grad, &self.weights_1d, self.p, self.q))
     }
 }
 
