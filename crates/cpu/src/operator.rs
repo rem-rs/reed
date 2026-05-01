@@ -905,6 +905,9 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
                     ))),
                 }
             }
+            EvalMode::HCurl | EvalMode::HDiv => Err(ReedError::Basis(
+                "HCurl/HDiv not supported on this basis type".into(),
+            )),
         }
     }
 

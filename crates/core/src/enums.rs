@@ -19,6 +19,10 @@ pub enum EvalMode {
     Curl,
     /// Quadrature weights w_q.
     Weight,
+    /// Curl of H(curl) basis (Nédélec): ∇×φ. 2D→scalar, 3D→3-vector at each q-pt.
+    HCurl,
+    /// Divergence of H(div) basis (Raviart-Thomas): ∇·ψ. Scalar at each q-pt.
+    HDiv,
 }
 
 /// Quadrature point distribution type.
