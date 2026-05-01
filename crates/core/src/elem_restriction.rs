@@ -23,6 +23,13 @@ pub trait ElemRestrictionTrait<T: Scalar>: Send + Sync {
             "assembled_csr_pattern is not implemented for this restriction type".into(),
         ))
     }
+
+    /// Clone this restriction into a boxed trait object.
+    fn boxed_clone(&self) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        Err(ReedError::ElemRestriction(
+            "boxed_clone is not implemented for this restriction type".into(),
+        ))
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -39,6 +46,13 @@ pub trait ElemRestrictionTrait<T: Scalar> {
     fn assembled_csr_pattern(&self) -> ReedResult<CsrPattern> {
         Err(ReedError::ElemRestriction(
             "assembled_csr_pattern is not implemented for this restriction type".into(),
+        ))
+    }
+
+    /// Clone this restriction into a boxed trait object.
+    fn boxed_clone(&self) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        Err(ReedError::ElemRestriction(
+            "boxed_clone is not implemented for this restriction type".into(),
         ))
     }
 }
