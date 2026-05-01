@@ -1,4 +1,4 @@
 target/
 Cargo.lock
 demo/dist/
-demo/target/
+demo/target/.worktrees/
