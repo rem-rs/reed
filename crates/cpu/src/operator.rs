@@ -612,6 +612,51 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
         )))
     }
 
+    /// Attempt to create a tensor-FDM inverse when the first active field uses a
+    /// tensor-product basis (e.g. LagrangeBasis) that provides 1D FDM data.
+    fn try_create_fdm_tensor_inverse(&self) -> ReedResult<Option<Box<dyn OperatorTrait<T>>>> {
+        use crate::fdm_tensor::{CpuFdmTensorInverseOperator, FdmOperatorKind};
+
+        let field_idx = match self.input_plans.first() {
+            Some(p) => p.field_index,
+            None => return Ok(None),
+        };
+        let field = &self.fields[field_idx];
+        let basis = match field.basis {
+            Some(b) => b,
+            None => return Ok(None),
+        };
+        let restriction = match field.restriction {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        let (interp_1d, grad_1d, weights_1d, p, q) = match basis.tensor_fdm_1d_data() {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let dim = basis.dim();
+        let nelem = self.num_elem;
+
+        // Heuristic: check QFunction inputs for gradient-like field names -> Stiffness, else Mass.
+        let op_kind = if self.qfunction.inputs().iter().any(|f| {
+            f.name.contains("du") || f.name.contains("grad")
+        }) {
+            FdmOperatorKind::Stiffness
+        } else {
+            FdmOperatorKind::Mass
+        };
+
+        let restriction_box = restriction.boxed_clone()?;
+
+        let inv = CpuFdmTensorInverseOperator::new(
+            interp_1d, grad_1d, weights_1d, p, q, dim, nelem,
+            op_kind, restriction_box,
+        )?;
+        Ok(Some(Box::new(inv)))
+    }
+
     /// Assemble into a libCEED-shaped matrix handle (set semantics).
     pub fn linear_assemble_ceed_matrix(&self, matrix: &mut CeedMatrix<T>) -> ReedResult<()> {
         match matrix.storage_mut() {
@@ -1592,19 +1637,21 @@ impl<'a, T: Scalar> OperatorTrait<T> for CpuOperator<'a, T> {
     fn operator_create_fdm_element_inverse(&self) -> ReedResult<Box<dyn OperatorTrait<T>>> {
         self.check_ready()?;
         let n = self.active_global_dof_len()?;
+
+        // Try tensor FDM path when the basis supports it (any n).
+        if let Some(tensor_inv) = self.try_create_fdm_tensor_inverse()? {
+            return Ok(tensor_inv);
+        }
+
+        // Fallback: dense inversion for small n.
         if n > crate::fdm_inverse::FDM_DENSE_MAX_N {
             return Err(ReedError::Operator(format!(
-                "operator_create_fdm_element_inverse: active global DOF {} exceeds Reed CPU dense limit {} (libCEED-style tensor FDM not implemented; only assembled dense inverse for small n)",
-                n,
-                crate::fdm_inverse::FDM_DENSE_MAX_N
+                "operator_create_fdm_element_inverse: global DOF {} exceeds dense limit {} and tensor FDM not available for this operator configuration",
+                n, crate::fdm_inverse::FDM_DENSE_MAX_N
             )));
         }
-        // Assemble the canonical Jacobian A in a local buffer; do not reuse or mutate the optional
-        // dense assembly slot (which may contain prior linear_assemble_add accumulation).
         let len = n.checked_mul(n).ok_or_else(|| {
-            ReedError::Operator(
-                "operator_create_fdm_element_inverse: active global DOF overflow in n*n".into(),
-            )
+            ReedError::Operator("operator_create_fdm_element_inverse: n*n overflow".into())
         })?;
         let mut a_vec = vec![T::ZERO; len];
         for j in 0..n {
@@ -1613,14 +1660,10 @@ impl<'a, T: Scalar> OperatorTrait<T> for CpuOperator<'a, T> {
             let x = crate::vector::CpuVector::from_vec(input);
             let mut y = crate::vector::CpuVector::new(n);
             self.apply(&x, &mut y)?;
-            for i in 0..n {
-                a_vec[i + j * n] = y.as_slice()[i];
-            }
+            for i in 0..n { a_vec[i + j * n] = y.as_slice()[i]; }
         }
         let inv = crate::fdm_inverse::invert_dense_col_major(&a_vec, n)?;
-        Ok(Box::new(crate::fdm_inverse::CpuFdmDenseInverseOperator::new(
-            n, inv,
-        )))
+        Ok(Box::new(crate::fdm_inverse::CpuFdmDenseInverseOperator::new(n, inv)))
     }
 
     fn operator_create_fdm_element_inverse_jacobi(&self) -> ReedResult<Box<dyn OperatorTrait<T>>> {
