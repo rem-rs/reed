@@ -10,6 +10,7 @@
 
 mod assembly_dense;
 mod fdm_inverse;
+mod fdm_tensor;
 pub mod basis_lagrange;
 pub mod basis_simplex;
 pub mod composite_operator;
@@ -44,6 +45,7 @@ pub use gallery::{
     Vector3MassApply, Vector3Poisson1DApply, Vector3Poisson2DApply, Vector3Poisson3DApply,
 };
 pub use fdm_inverse::{CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, FDM_DENSE_MAX_N};
+pub use fdm_tensor::{CpuFdmTensorInverseOperator, FdmOperatorKind};
 pub use operator::{CpuOperator, FieldVector, OperatorBuilder};
 
 pub struct CpuBackend<T: Scalar> {
