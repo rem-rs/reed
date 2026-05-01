@@ -91,6 +91,30 @@ pub trait Backend<T: Scalar>: Send + Sync {
         q: usize,
     ) -> ReedResult<Box<dyn BasisTrait<T>>>;
 
+    fn create_basis_hcurl_nedelec(
+        &self,
+        _topology: ElemTopology,
+        _p: usize,
+        _q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "create_basis_hcurl_nedelec is not implemented for this backend".into(),
+        ))
+    }
+
+    fn create_basis_hdiv_raviart_thomas(
+        &self,
+        _topology: ElemTopology,
+        _p: usize,
+        _q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "create_basis_hdiv_raviart_thomas is not implemented for this backend".into(),
+        ))
+    }
+
     /// Optional device-side gallery QFunction (e.g. WGSL on wgpu for `f32`).
     ///
     /// When this returns `None`, callers should fall back to the host CPU gallery lookup.
@@ -144,6 +168,30 @@ pub trait Backend<T: Scalar> {
         ncomp: usize,
         q: usize,
     ) -> ReedResult<Box<dyn BasisTrait<T>>>;
+
+    fn create_basis_hcurl_nedelec(
+        &self,
+        _topology: ElemTopology,
+        _p: usize,
+        _q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "create_basis_hcurl_nedelec is not implemented for this backend".into(),
+        ))
+    }
+
+    fn create_basis_hdiv_raviart_thomas(
+        &self,
+        _topology: ElemTopology,
+        _p: usize,
+        _q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "create_basis_hdiv_raviart_thomas is not implemented for this backend".into(),
+        ))
+    }
 
     fn try_device_q_function_by_name(
         &self,
@@ -301,6 +349,26 @@ impl<T: Scalar> Reed<T> {
         q: usize,
     ) -> ReedResult<Box<dyn BasisTrait<T>>> {
         (**self.backend.lock().unwrap()).create_basis_h1_simplex(topo, poly, ncomp, q)
+    }
+
+    pub fn basis_hcurl_nedelec(
+        &self,
+        topo: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        (**self.backend.lock().unwrap()).create_basis_hcurl_nedelec(topo, p, q, qmode)
+    }
+
+    pub fn basis_hdiv_raviart_thomas(
+        &self,
+        topo: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        (**self.backend.lock().unwrap()).create_basis_hdiv_raviart_thomas(topo, p, q, qmode)
     }
 
     /// Get the backend handle.
