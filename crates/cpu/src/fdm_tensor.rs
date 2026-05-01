@@ -129,7 +129,10 @@ fn jacobi_eigen_symmetric<T: Scalar>(
         }
     }
 
-    let evals: Vec<T> = (0..p).map(|i| w[i + i * p]).collect();
+    for i in 0..p {
+        w[i + i * p] = d[i];
+    }
+    let evals: Vec<T> = d;
     let mut perm: Vec<usize> = (0..p).collect();
     perm.sort_by(|&a, &b| {
         evals[a]
