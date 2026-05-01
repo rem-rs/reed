@@ -75,6 +75,22 @@ pub trait Backend<T: Scalar>: Send + Sync {
         ncomp: usize,
         q: usize,
     ) -> ReedResult<Box<dyn BasisTrait<T>>>;
+
+    fn create_basis_hcurl_nedelec(
+        &self,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>>;
+
+    fn create_basis_hdiv_raviart_thomas(
+        &self,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>>;
 }
 
 /// WASM variant — wgpu::Device is not Send+Sync in browser.
@@ -118,6 +134,22 @@ pub trait Backend<T: Scalar> {
         poly: usize,
         ncomp: usize,
         q: usize,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>>;
+
+    fn create_basis_hcurl_nedelec(
+        &self,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>>;
+
+    fn create_basis_hdiv_raviart_thomas(
+        &self,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
     ) -> ReedResult<Box<dyn BasisTrait<T>>>;
 }
 
@@ -304,6 +336,26 @@ impl<T: Scalar> reed_core::Backend<T> for WgpuBackend<T> {
         Backend::<T>::create_basis_h1_simplex(self, topo, poly, ncomp, q)
     }
 
+    fn create_basis_hcurl_nedelec(
+        &self,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: reed_core::enums::QuadMode,
+    ) -> reed_core::ReedResult<Box<dyn reed_core::BasisTrait<T>>> {
+        Backend::<T>::create_basis_hcurl_nedelec(self, topology, p, q, qmode)
+    }
+
+    fn create_basis_hdiv_raviart_thomas(
+        &self,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: reed_core::enums::QuadMode,
+    ) -> reed_core::ReedResult<Box<dyn reed_core::BasisTrait<T>>> {
+        Backend::<T>::create_basis_hdiv_raviart_thomas(self, topology, p, q, qmode)
+    }
+
     fn try_device_q_function_by_name(
         &self,
         name: &str,
@@ -401,6 +453,30 @@ impl<T: Scalar> Backend<T> for WgpuBackend<T> {
             self.runtime.clone(),
         )?))
     }
+
+    fn create_basis_hcurl_nedelec(
+        &self,
+        _topology: ElemTopology,
+        _p: usize,
+        _q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "Nedelec basis not yet implemented on WGPU".into(),
+        ))
+    }
+
+    fn create_basis_hdiv_raviart_thomas(
+        &self,
+        _topology: ElemTopology,
+        _p: usize,
+        _q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "RT basis not yet implemented on WGPU".into(),
+        ))
+    }
 }
 
 /// WASM-only impl: on WASM, basis creation falls back to CPU since GPU basis is unavailable.
@@ -488,6 +564,30 @@ impl<T: Scalar> reed_core::Backend<T> for WgpuBackend<T> {
         q: usize,
     ) -> ReedResult<Box<dyn BasisTrait<T>>> {
         reed_core::Backend::create_basis_h1_simplex(&self.cpu_backend, topo, poly, ncomp, q)
+    }
+
+    fn create_basis_hcurl_nedelec(
+        &self,
+        _topology: ElemTopology,
+        _p: usize,
+        _q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "Nedelec basis not yet implemented on WGPU".into(),
+        ))
+    }
+
+    fn create_basis_hdiv_raviart_thomas(
+        &self,
+        _topology: ElemTopology,
+        _p: usize,
+        _q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "RT basis not yet implemented on WGPU".into(),
+        ))
     }
 
     fn try_device_q_function_by_name(

@@ -21,8 +21,10 @@ pub mod gallery;
 pub mod operator;
 pub mod vector;
 
-use basis_lagrange::LagrangeBasis;
-use basis_simplex::SimplexBasis;
+pub use basis_lagrange::LagrangeBasis;
+pub use basis_nedelec::NedelecBasis;
+pub use basis_rt::RaviartThomasBasis;
+pub use basis_simplex::SimplexBasis;
 use elem_restriction::CpuElemRestriction;
 use reed_core::{
     basis::BasisTrait,
@@ -123,6 +125,26 @@ impl<T: Scalar> Backend<T> for CpuBackend<T> {
         q: usize,
     ) -> ReedResult<Box<dyn BasisTrait<T>>> {
         Ok(Box::new(SimplexBasis::<T>::new(topo, poly, ncomp, q)?))
+    }
+
+    fn create_basis_hcurl_nedelec(
+        &self,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Ok(Box::new(NedelecBasis::new(topology, p, q)?))
+    }
+
+    fn create_basis_hdiv_raviart_thomas(
+        &self,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        _qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        Ok(Box::new(RaviartThomasBasis::new(topology, p, q)?))
     }
 }
 
