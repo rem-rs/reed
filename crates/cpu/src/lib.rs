@@ -9,12 +9,12 @@
 //! as little-endian doubles and cast to `T`.
 
 mod assembly_dense;
-mod fdm_inverse;
-mod fdm_tensor;
 pub mod basis_lagrange;
 pub mod basis_simplex;
 pub mod composite_operator;
 pub mod elem_restriction;
+mod fdm_inverse;
+mod fdm_tensor;
 pub mod gallery;
 pub mod operator;
 pub mod vector;
@@ -37,15 +37,15 @@ use reed_core::{
 use vector::CpuVector;
 
 pub use composite_operator::{CompositeOperator, CompositeOperatorBorrowed};
-pub use gallery::{
-    Identity, IdentityScalar, Mass1DBuild, Mass2DBuild, Mass3DBuild, MassApply,
-    MassApplyInterpTimesWeight, Poisson1DApply,
-    Poisson1DBuild, Poisson2DApply, Poisson2DBuild, Poisson3DApply, Poisson3DBuild, Scale,
-    ScaleScalar, Vec2Dot, Vec3Dot, Vector2MassApply, Vector2Poisson1DApply, Vector2Poisson2DApply,
-    Vector3MassApply, Vector3Poisson1DApply, Vector3Poisson2DApply, Vector3Poisson3DApply,
-};
 pub use fdm_inverse::{CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, FDM_DENSE_MAX_N};
 pub use fdm_tensor::{CpuFdmTensorInverseOperator, FdmOperatorKind};
+pub use gallery::{
+    Identity, IdentityScalar, Mass1DBuild, Mass2DBuild, Mass3DBuild, MassApply,
+    MassApplyInterpTimesWeight, Poisson1DApply, Poisson1DBuild, Poisson2DApply, Poisson2DBuild,
+    Poisson3DApply, Poisson3DBuild, Scale, ScaleScalar, Vec2Dot, Vec3Dot, Vector2MassApply,
+    Vector2Poisson1DApply, Vector2Poisson2DApply, Vector3MassApply, Vector3Poisson1DApply,
+    Vector3Poisson2DApply, Vector3Poisson3DApply,
+};
 pub use operator::{CpuOperator, FieldVector, OperatorBuilder};
 
 pub struct CpuBackend<T: Scalar> {

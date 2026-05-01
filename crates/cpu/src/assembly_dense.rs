@@ -20,13 +20,11 @@ pub(crate) struct DenseLinearAssemblySlot<T: Scalar> {
 
 impl<T: Scalar> DenseLinearAssemblySlot<T> {
     pub(crate) fn new_symbolic(n: usize) -> ReedResult<Self> {
-        let len = n
-            .checked_mul(n)
-            .ok_or_else(|| {
-                ReedError::Operator(
-                    "linear_assemble_symbolic: active global DOF count overflow in n*n".into(),
-                )
-            })?;
+        let len = n.checked_mul(n).ok_or_else(|| {
+            ReedError::Operator(
+                "linear_assemble_symbolic: active global DOF count overflow in n*n".into(),
+            )
+        })?;
         Ok(Self {
             n,
             a: vec![T::ZERO; len],

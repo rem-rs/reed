@@ -24,9 +24,7 @@ pub use operator::{OperatorAssembleKind, OperatorTrait, OperatorTransposeRequest
 pub use qfunction::{
     ClosureQFunction, QFunctionCategory, QFunctionClosure, QFunctionField, QFunctionTrait,
 };
-pub use qfunction_context::{
-    QFunctionContext, QFunctionContextField, QFunctionContextFieldKind,
-};
+pub use qfunction_context::{QFunctionContext, QFunctionContextField, QFunctionContextFieldKind};
 pub use reed::{Backend, Reed};
 pub use scalar::Scalar;
 pub use types::{CeedInt, CeedSize};

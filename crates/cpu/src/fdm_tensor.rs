@@ -82,9 +82,7 @@ fn jacobi_eigen_symmetric<T: Scalar>(
             for j in (i + 1)..p {
                 let a_ij = w[i + j * p];
                 let p_t: T = NumCast::from(p as f64).unwrap_or(T::ONE);
-                let tol = T::epsilon()
-                    * d[i].abs().max(d[j].abs()).max(T::ONE)
-                    * p_t;
+                let tol = T::epsilon() * d[i].abs().max(d[j].abs()).max(T::ONE) * p_t;
                 if a_ij.abs() <= tol {
                     continue;
                 }
@@ -505,8 +503,7 @@ impl<T: Scalar> CpuFdmTensorInverseOperator<T> {
         if !add {
             yg.fill(T::ZERO);
         }
-        self.restriction
-            .apply(TransposeMode::Transpose, &vl, yg)?;
+        self.restriction.apply(TransposeMode::Transpose, &vl, yg)?;
         Ok(())
     }
 }

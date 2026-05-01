@@ -233,12 +233,7 @@ pub(crate) fn dispatch_basis_weight_tile_f32(
                 | wgpu::BufferUsages::COPY_SRC
                 | wgpu::BufferUsages::COPY_DST,
         });
-    let params: [u32; 4] = [
-        num_qpoints as u32,
-        out_size as u32,
-        0,
-        0,
-    ];
+    let params: [u32; 4] = [num_qpoints as u32, out_size as u32, 0, 0];
     let p_buffer = runtime
         .device
         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -700,9 +695,8 @@ impl<T: Scalar> WgpuBasis<T> {
         let mut v_f32 = vec![0.0_f32; out_size];
         dispatch_basis_weight_tile_f32(runtime, &weights_f32, num_elem, num_qpoints, &mut v_f32)?;
         for (dst, src) in v.iter_mut().zip(v_f32.iter()) {
-            *dst = NumCast::from(*src).ok_or_else(|| {
-                ReedError::Basis("weight f32->T readback failed".into())
-            })?;
+            *dst = NumCast::from(*src)
+                .ok_or_else(|| ReedError::Basis("weight f32->T readback failed".into()))?;
         }
         Ok(true)
     }
@@ -1650,8 +1644,10 @@ mod wgpu_basis_tests {
             .collect();
         let mut v_gpu = vec![0.0_f32; ne * gpu.num_dof()];
         let mut v_cpu = vec![0.0_f32; ne * cpu.num_dof()];
-        gpu.apply(ne, true, EvalMode::Weight, &u, &mut v_gpu).unwrap();
-        cpu.apply(ne, true, EvalMode::Weight, &u, &mut v_cpu).unwrap();
+        gpu.apply(ne, true, EvalMode::Weight, &u, &mut v_gpu)
+            .unwrap();
+        cpu.apply(ne, true, EvalMode::Weight, &u, &mut v_cpu)
+            .unwrap();
         for i in 0..v_gpu.len() {
             assert!(
                 (v_gpu[i] - v_cpu[i]).abs() < 1e-5,

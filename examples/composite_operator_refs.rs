@@ -82,7 +82,10 @@ fn main() -> ReedResult<()> {
     y.set_value(0.0)?;
     composite.apply(&*u, &mut *y)?;
 
-    println!("composite of two MassApply on u=[1,1,1] => {:?}", y.as_slice());
+    println!(
+        "composite of two MassApply on u=[1,1,1] => {:?}",
+        y.as_slice()
+    );
     let subops: [&dyn OperatorTrait<f64>; 2] = [&op_a, &op_b];
 
     let mut dense = CeedMatrix::<f64>::dense_col_major_symbolic(ndofs, ndofs)?;
@@ -94,10 +97,7 @@ fn main() -> ReedResult<()> {
     }
 
     if let CeedMatrixStorage::DenseColMajor { values, .. } = dense.storage() {
-        println!(
-            "dense(0,0) from fallback sub-operator sum = {}",
-            values[0]
-        );
+        println!("dense(0,0) from fallback sub-operator sum = {}", values[0]);
     }
 
     let pat = r_u.assembled_csr_pattern()?;

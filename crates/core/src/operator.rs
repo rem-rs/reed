@@ -477,7 +477,8 @@ pub trait OperatorTrait<T: Scalar> {
 
     fn linear_assemble_add_ceed_matrix(&self, _matrix: &mut CeedMatrix<T>) -> ReedResult<()> {
         Err(ReedError::Operator(
-            "OperatorTrait::linear_assemble_add_ceed_matrix is not implemented (wasm32 stub)".into(),
+            "OperatorTrait::linear_assemble_add_ceed_matrix is not implemented (wasm32 stub)"
+                .into(),
         ))
     }
 

@@ -10,11 +10,10 @@ pub use qfunction_device::{
     Mass3DBuildF32Wgpu, MassApplyF32Wgpu, MassApplyInterpTimesWeightF32Wgpu, Poisson1DApplyF32Wgpu,
     Poisson1DBuildF32Wgpu, Poisson2DApplyF32Wgpu, Poisson2DBuildF32Wgpu, Poisson3DApplyF32Wgpu,
     Poisson3DBuildF32Wgpu, QFunctionPrototypeScaleF32, ScaleF32Wgpu, Vec2DotF32Wgpu,
-    Vec3DotF32Wgpu, Vector2MassApplyF32Wgpu,
-    Vector2Poisson1DApplyF32Wgpu, Vector2Poisson2DApplyF32Wgpu, Vector3MassApplyF32Wgpu,
-    Vector3Poisson1DApplyF32Wgpu, Vector3Poisson2DApplyF32Wgpu, Vector3Poisson3DApplyF32Wgpu,
+    Vec3DotF32Wgpu, Vector2MassApplyF32Wgpu, Vector2Poisson1DApplyF32Wgpu,
+    Vector2Poisson2DApplyF32Wgpu, Vector3MassApplyF32Wgpu, Vector3Poisson1DApplyF32Wgpu,
+    Vector3Poisson2DApplyF32Wgpu, Vector3Poisson3DApplyF32Wgpu,
 };
-pub use runtime::GpuRuntime;
 use reed_core::{
     enums::*,
     error::{ReedError, ReedResult},
@@ -23,6 +22,7 @@ use reed_core::{
     types::CeedInt,
     BasisTrait, ElemRestrictionTrait, VectorTrait,
 };
+pub use runtime::GpuRuntime;
 use std::sync::Arc;
 
 /// # Safety

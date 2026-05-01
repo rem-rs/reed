@@ -181,7 +181,8 @@ impl QFunctionContext {
     /// Call after uploading host bytes to device memory (WGSL uniform/storage).
     #[inline]
     pub fn mark_host_synced_to_device(&self) {
-        self.host_dirty_for_device.store(SYNC_CLEAN, Ordering::Relaxed);
+        self.host_dirty_for_device
+            .store(SYNC_CLEAN, Ordering::Relaxed);
     }
 
     /// Call after mutating the buffer without going through typed `write_*` helpers.
@@ -413,10 +414,9 @@ impl QFunctionContext {
                 "named field access requires QFunctionContext::from_field_layout".into(),
             )
         })?;
-        fields
-            .iter()
-            .find(|f| f.name == name)
-            .ok_or_else(|| ReedError::QFunction(format!("unknown QFunctionContext field {:?}", name)))
+        fields.iter().find(|f| f.name == name).ok_or_else(|| {
+            ReedError::QFunction(format!("unknown QFunctionContext field {:?}", name))
+        })
     }
 }
 

@@ -9,4 +9,3 @@ pub type CeedInt = i32;
 
 /// Canonical size type used for allocation lengths and Rust indexing.
 pub type CeedSize = usize;
-

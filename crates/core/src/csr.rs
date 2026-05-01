@@ -117,9 +117,9 @@ pub fn csr_sparsity_from_offset_restriction(
         let sl = &offsets[elem * elemsize..(elem + 1) * elemsize];
         let mut indices = Vec::with_capacity(ncomp.saturating_mul(elemsize));
         for comp in 0..ncomp {
-            let comp_base = comp
-                .checked_mul(compstride)
-                .ok_or_else(|| ReedError::InvalidArgument("csr_sparsity: comp * compstride overflow".into()))?;
+            let comp_base = comp.checked_mul(compstride).ok_or_else(|| {
+                ReedError::InvalidArgument("csr_sparsity: comp * compstride overflow".into())
+            })?;
             for &base in sl {
                 if base < 0 {
                     return Err(ReedError::InvalidArgument(format!(

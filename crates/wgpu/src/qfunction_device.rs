@@ -86,9 +86,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
-use reed_core::{
-    qfunction::QFunctionTrait, QFunctionContext, ReedError, ReedResult,
-};
+use reed_core::{qfunction::QFunctionTrait, QFunctionContext, ReedError, ReedResult};
 use wgpu::util::DeviceExt;
 
 use crate::runtime::GpuRuntime;
@@ -121,12 +119,7 @@ fn transpose_qp_broadcast_components_f32(
             "transpose: input cotangent / qdata length mismatch".into(),
         ));
     }
-    runtime.mass_apply_qp_transpose_broadcast_scalar_qdata_f32_host(
-        dv,
-        qdata,
-        du,
-        components,
-    )
+    runtime.mass_apply_qp_transpose_broadcast_scalar_qdata_f32_host(dv, qdata, du, components)
 }
 
 const WGSL_SCALE_PROTO: &str = r#"
@@ -975,8 +968,7 @@ impl QFunctionTrait<f32> for MassApplyF32Wgpu {
                 "MassApplyF32Wgpu transpose: buffer length mismatch".into(),
             ));
         }
-        self
-            .runtime
+        self.runtime
             .mass_apply_qp_transpose_accumulate_f32_host(dv, qdata, du)
     }
 }
@@ -1059,8 +1051,7 @@ impl QFunctionTrait<f32> for MassApplyInterpTimesWeightF32Wgpu {
                 "MassApplyInterpTimesWeightF32Wgpu transpose: buffer length mismatch".into(),
             ));
         }
-        self
-            .runtime
+        self.runtime
             .mass_apply_qp_transpose_accumulate_f32_host(dv, w, du)
     }
 }
@@ -1809,8 +1800,7 @@ impl QFunctionTrait<f32> for Poisson1DApplyF32Wgpu {
                 "Poisson1DApplyF32Wgpu transpose: buffer length mismatch".into(),
             ));
         }
-        self
-            .runtime
+        self.runtime
             .mass_apply_qp_transpose_accumulate_f32_host(ddv, qdata, ddu)
     }
 }
@@ -2121,7 +2111,8 @@ impl QFunctionTrait<f32> for Poisson2DApplyF32Wgpu {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
             return Err(ReedError::QFunction(
-                "Poisson2DApplyF32Wgpu transpose expects 1 output cotangent and 2 input buffers".into(),
+                "Poisson2DApplyF32Wgpu transpose expects 1 output cotangent and 2 input buffers"
+                    .into(),
             ));
         }
         let ddv = output_cotangents[0];
@@ -2688,7 +2679,8 @@ impl QFunctionTrait<f32> for Poisson3DApplyF32Wgpu {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
             return Err(ReedError::QFunction(
-                "Poisson3DApplyF32Wgpu transpose expects 1 output cotangent and 2 input buffers".into(),
+                "Poisson3DApplyF32Wgpu transpose expects 1 output cotangent and 2 input buffers"
+                    .into(),
             ));
         }
         let ddv = output_cotangents[0];
@@ -3550,7 +3542,8 @@ impl QFunctionTrait<f32> for IdentityF32Wgpu {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 1 {
             return Err(ReedError::QFunction(
-                "IdentityF32Wgpu transpose expects 1 output cotangent and 1 input cotangent buffer".into(),
+                "IdentityF32Wgpu transpose expects 1 output cotangent and 1 input cotangent buffer"
+                    .into(),
             ));
         }
         let ncomp = self.inputs[0].num_comp;
@@ -3640,7 +3633,8 @@ impl QFunctionTrait<f32> for IdentityScalarF32Wgpu {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 1 {
             return Err(ReedError::QFunction(
-                "IdentityScalarF32Wgpu transpose expects 1 output cotangent and 1 input buffer".into(),
+                "IdentityScalarF32Wgpu transpose expects 1 output cotangent and 1 input buffer"
+                    .into(),
             ));
         }
         let ncomp = self.inputs[0].num_comp;
@@ -3726,7 +3720,8 @@ impl QFunctionTrait<f32> for ScaleF32Wgpu {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 1 {
             return Err(ReedError::QFunction(
-                "ScaleF32Wgpu transpose expects 1 output cotangent and 1 input cotangent buffer".into(),
+                "ScaleF32Wgpu transpose expects 1 output cotangent and 1 input cotangent buffer"
+                    .into(),
             ));
         }
         let alpha64 = QFunctionContext::read_f64_le_bytes(ctx, 0)?;
@@ -3924,7 +3919,14 @@ impl QFunctionTrait<f32> for Vector2MassApplyF32Wgpu {
         output_cotangents: &[&[f32]],
         input_cotangents: &mut [&mut [f32]],
     ) -> ReedResult<()> {
-        transpose_qp_broadcast_components_f32(&self.runtime, q, 2, ctx, output_cotangents, input_cotangents)
+        transpose_qp_broadcast_components_f32(
+            &self.runtime,
+            q,
+            2,
+            ctx,
+            output_cotangents,
+            input_cotangents,
+        )
     }
 }
 
@@ -4108,7 +4110,14 @@ impl QFunctionTrait<f32> for Vector3MassApplyF32Wgpu {
         output_cotangents: &[&[f32]],
         input_cotangents: &mut [&mut [f32]],
     ) -> ReedResult<()> {
-        transpose_qp_broadcast_components_f32(&self.runtime, q, 3, ctx, output_cotangents, input_cotangents)
+        transpose_qp_broadcast_components_f32(
+            &self.runtime,
+            q,
+            3,
+            ctx,
+            output_cotangents,
+            input_cotangents,
+        )
     }
 }
 
@@ -4170,7 +4179,14 @@ impl QFunctionTrait<f32> for Vector2Poisson1DApplyF32Wgpu {
         output_cotangents: &[&[f32]],
         input_cotangents: &mut [&mut [f32]],
     ) -> ReedResult<()> {
-        transpose_qp_broadcast_components_f32(&self.runtime, q, 2, ctx, output_cotangents, input_cotangents)
+        transpose_qp_broadcast_components_f32(
+            &self.runtime,
+            q,
+            2,
+            ctx,
+            output_cotangents,
+            input_cotangents,
+        )
     }
 }
 
@@ -4232,7 +4248,14 @@ impl QFunctionTrait<f32> for Vector3Poisson1DApplyF32Wgpu {
         output_cotangents: &[&[f32]],
         input_cotangents: &mut [&mut [f32]],
     ) -> ReedResult<()> {
-        transpose_qp_broadcast_components_f32(&self.runtime, q, 3, ctx, output_cotangents, input_cotangents)
+        transpose_qp_broadcast_components_f32(
+            &self.runtime,
+            q,
+            3,
+            ctx,
+            output_cotangents,
+            input_cotangents,
+        )
     }
 }
 
@@ -4896,9 +4919,9 @@ pub fn try_create_device_q_function_f32(
     runtime: Arc<GpuRuntime>,
 ) -> Option<ReedResult<Box<dyn QFunctionTrait<f32>>>> {
     match name {
-        "MassApply" | "MassApplyAtPoints" => {
-            Some(MassApplyF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>))
-        }
+        "MassApply" | "MassApplyAtPoints" => Some(
+            MassApplyF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+        ),
         "MassApplyInterpTimesWeight" | "MassApplyInterpTimesWeightAtPoints" => Some(
             MassApplyInterpTimesWeightF32Wgpu::new(runtime)
                 .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
@@ -4913,28 +4936,36 @@ pub fn try_create_device_q_function_f32(
             Mass3DBuildF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Poisson1DBuild" => Some(
-            Poisson1DBuildF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            Poisson1DBuildF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Poisson2DBuild" => Some(
-            Poisson2DBuildF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            Poisson2DBuildF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Poisson3DBuild" => Some(
-            Poisson3DBuildF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            Poisson3DBuildF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Poisson1DApply" => Some(
-            Poisson1DApplyF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            Poisson1DApplyF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Poisson2DApply" | "Poisson2DApplyAtPoints" => Some(
-            Poisson2DApplyF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            Poisson2DApplyF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Poisson3DApply" => Some(
-            Poisson3DApplyF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            Poisson3DApplyF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Vector2MassApply" => Some(
-            Vector2MassApplyF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            Vector2MassApplyF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Vector3MassApply" => Some(
-            Vector3MassApplyF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            Vector3MassApplyF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
         "Vector2Poisson1DApply" => Some(
             Vector2Poisson1DApplyF32Wgpu::new(runtime)
@@ -4956,21 +4987,22 @@ pub fn try_create_device_q_function_f32(
             Vector3Poisson3DApplyF32Wgpu::new(runtime)
                 .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
-        "Vec2Dot" => Some(
-            Vec2DotF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
-        ),
-        "Vec3Dot" => Some(
-            Vec3DotF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
-        ),
-        "Identity" | "IdentityAtPoints" => Some(
-            IdentityF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
-        ),
+        "Vec2Dot" => {
+            Some(Vec2DotF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>))
+        }
+        "Vec3Dot" => {
+            Some(Vec3DotF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>))
+        }
+        "Identity" | "IdentityAtPoints" => {
+            Some(IdentityF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>))
+        }
         "Identity to scalar" | "IdentityScalar" => Some(
-            IdentityScalarF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
+            IdentityScalarF32Wgpu::new(runtime)
+                .map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
         ),
-        "Scale" | "Scale (scalar)" | "ScaleScalar" | "ScaleAtPoints" => Some(
-            ScaleF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>),
-        ),
+        "Scale" | "Scale (scalar)" | "ScaleScalar" | "ScaleAtPoints" => {
+            Some(ScaleF32Wgpu::new(runtime).map(|q| Box::new(q) as Box<dyn QFunctionTrait<f32>>))
+        }
         _ => None,
     }
 }
@@ -5043,11 +5075,9 @@ mod tests {
         let qd: Vec<f32> = (0..q).map(|i| 1.0 + i as f32 * 0.01).collect();
         let mut out_gpu = vec![0.0_f32; q];
         let mut out_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..q {
             assert!(
@@ -5076,11 +5106,9 @@ mod tests {
         let w: Vec<f32> = (0..q).map(|i| 0.5 + (i as f32) * 0.02).collect();
         let mut v_gpu = vec![0.0_f32; q];
         let mut v_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(&[], q, &[u.as_slice(), w.as_slice()], &mut [&mut v_gpu])
+        gpu.apply(&[], q, &[u.as_slice(), w.as_slice()], &mut [&mut v_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[u.as_slice(), w.as_slice()], &mut [&mut v_cpu])
+        cpu.apply(&[], q, &[u.as_slice(), w.as_slice()], &mut [&mut v_cpu])
             .unwrap();
         assert_eq!(v_gpu, v_cpu);
 
@@ -5130,22 +5158,20 @@ mod tests {
         let weights: Vec<f32> = (0..q).map(|i| 0.2 + (i as f32) * 0.03).collect();
         let mut q_gpu = vec![0.0_f32; q];
         let mut q_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_gpu],
-            )
-            .unwrap();
-        cpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_cpu],
-            )
-            .unwrap();
+        gpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_gpu],
+        )
+        .unwrap();
+        cpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_cpu],
+        )
+        .unwrap();
         for i in 0..q {
             assert!(
                 (q_gpu[i] - q_cpu[i]).abs() < 1.0e-5,
@@ -5175,22 +5201,20 @@ mod tests {
         let weights: Vec<f32> = (0..q).map(|i| 0.15 + (i as f32) * 0.05).collect();
         let mut q_gpu = vec![0.0_f32; q];
         let mut q_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_gpu],
-            )
-            .unwrap();
-        cpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_cpu],
-            )
-            .unwrap();
+        gpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_gpu],
+        )
+        .unwrap();
+        cpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_cpu],
+        )
+        .unwrap();
         for i in 0..q {
             assert!(
                 (q_gpu[i] - q_cpu[i]).abs() < 2.0e-5,
@@ -5231,22 +5255,20 @@ mod tests {
         let weights: Vec<f32> = (0..q).map(|i| 0.25 + (i as f32) * 0.02).collect();
         let mut q_gpu = vec![0.0_f32; q];
         let mut q_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_gpu],
-            )
-            .unwrap();
-        cpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_cpu],
-            )
-            .unwrap();
+        gpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_gpu],
+        )
+        .unwrap();
+        cpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_cpu],
+        )
+        .unwrap();
         for i in 0..q {
             assert!(
                 (q_gpu[i] - q_cpu[i]).abs() < 2.0e-4,
@@ -5274,22 +5296,20 @@ mod tests {
         let weights: Vec<f32> = (0..q).map(|i| 0.7 + (i as f32) * 0.01).collect();
         let mut q_gpu = vec![0.0_f32; q];
         let mut q_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_gpu],
-            )
-            .unwrap();
-        cpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_cpu],
-            )
-            .unwrap();
+        gpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_gpu],
+        )
+        .unwrap();
+        cpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_cpu],
+        )
+        .unwrap();
         for i in 0..q {
             assert!(
                 (q_gpu[i] - q_cpu[i]).abs() < 1.0e-5,
@@ -5343,22 +5363,20 @@ mod tests {
         let weights: Vec<f32> = (0..q).map(|i| 0.22 + (i as f32) * 0.04).collect();
         let mut q_gpu = vec![0.0_f32; q * 4];
         let mut q_cpu = vec![0.0_f32; q * 4];
-        gpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_gpu],
-            )
-            .unwrap();
-        cpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_cpu],
-            )
-            .unwrap();
+        gpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_gpu],
+        )
+        .unwrap();
+        cpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_cpu],
+        )
+        .unwrap();
         for i in 0..q * 4 {
             let tol = 5.0e-3_f32 * q_cpu[i].abs().max(1.0);
             assert!(
@@ -5399,22 +5417,20 @@ mod tests {
         let weights: Vec<f32> = (0..q).map(|i| 0.3 + (i as f32) * 0.025).collect();
         let mut q_gpu = vec![0.0_f32; q * 9];
         let mut q_cpu = vec![0.0_f32; q * 9];
-        gpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_gpu],
-            )
-            .unwrap();
-        cpu
-            .apply(
-                &[],
-                q,
-                &[dx.as_slice(), weights.as_slice()],
-                &mut [&mut q_cpu],
-            )
-            .unwrap();
+        gpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_gpu],
+        )
+        .unwrap();
+        cpu.apply(
+            &[],
+            q,
+            &[dx.as_slice(), weights.as_slice()],
+            &mut [&mut q_cpu],
+        )
+        .unwrap();
         for i in 0..q * 9 {
             assert!(
                 (q_gpu[i] - q_cpu[i]).abs() < 5.0e-4,
@@ -5442,11 +5458,9 @@ mod tests {
         let qd: Vec<f32> = (0..q).map(|i| 1.0 + i as f32 * 0.01).collect();
         let mut out_gpu = vec![0.0_f32; q];
         let mut out_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..q {
             assert!(
@@ -5477,20 +5491,10 @@ mod tests {
         let mut ddu_cpu = ddu_gpu.clone();
         let mut qd_gpu = qd.clone();
         let mut qd_cpu = qd.clone();
-        gpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_gpu, &mut qd_gpu],
-        )
-        .unwrap();
-        cpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_cpu, &mut qd_cpu],
-        )
-        .unwrap();
+        gpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_gpu, &mut qd_gpu])
+            .unwrap();
+        cpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_cpu, &mut qd_cpu])
+            .unwrap();
         for i in 0..q {
             assert!(
                 (ddu_gpu[i] - ddu_cpu[i]).abs() < 1.0e-4,
@@ -5515,16 +5519,12 @@ mod tests {
         let cpu = reed_cpu::Poisson2DApply::default();
         let q = 40usize;
         let du: Vec<f32> = (0..2 * q).map(|i| (i as f32) * 0.01 - 0.1).collect();
-        let qd: Vec<f32> = (0..4 * q)
-            .map(|i| 0.25 + (i as f32) * 0.007)
-            .collect();
+        let qd: Vec<f32> = (0..4 * q).map(|i| 0.25 + (i as f32) * 0.007).collect();
         let mut out_gpu = vec![0.0_f32; 2 * q];
         let mut out_cpu = vec![0.0_f32; 2 * q];
-        gpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..2 * q {
             assert!(
@@ -5550,16 +5550,12 @@ mod tests {
         let cpu = reed_cpu::Poisson3DApply::default();
         let q = 32usize;
         let du: Vec<f32> = (0..3 * q).map(|i| (i as f32) * 0.02 - 0.3).collect();
-        let qd: Vec<f32> = (0..9 * q)
-            .map(|i| 0.1 + (i as f32) * 0.005)
-            .collect();
+        let qd: Vec<f32> = (0..9 * q).map(|i| 0.1 + (i as f32) * 0.005).collect();
         let mut out_gpu = vec![0.0_f32; 3 * q];
         let mut out_cpu = vec![0.0_f32; 3 * q];
-        gpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..3 * q {
             assert!(
@@ -5589,20 +5585,10 @@ mod tests {
         let mut qd_cpu = qd_gpu.clone();
         let mut ddu_gpu: Vec<f32> = (0..2 * q).map(|i| 0.05 * (i as f32)).collect();
         let mut ddu_cpu = ddu_gpu.clone();
-        gpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_gpu, &mut qd_gpu],
-        )
-        .unwrap();
-        cpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_cpu, &mut qd_cpu],
-        )
-        .unwrap();
+        gpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_gpu, &mut qd_gpu])
+            .unwrap();
+        cpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_cpu, &mut qd_cpu])
+            .unwrap();
         for i in 0..2 * q {
             assert!(
                 (ddu_gpu[i] - ddu_cpu[i]).abs() < 3.0e-5,
@@ -5632,20 +5618,10 @@ mod tests {
         let mut qd_cpu = qd_gpu.clone();
         let mut ddu_gpu: Vec<f32> = (0..3 * q).map(|i| -0.02 * (i as isize as f32)).collect();
         let mut ddu_cpu = ddu_gpu.clone();
-        gpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_gpu, &mut qd_gpu],
-        )
-        .unwrap();
-        cpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_cpu, &mut qd_cpu],
-        )
-        .unwrap();
+        gpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_gpu, &mut qd_gpu])
+            .unwrap();
+        cpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_cpu, &mut qd_cpu])
+            .unwrap();
         for i in 0..3 * q {
             assert!(
                 (ddu_gpu[i] - ddu_cpu[i]).abs() < 4.0e-5,
@@ -5675,20 +5651,10 @@ mod tests {
         let mut qd_cpu = qd_gpu.clone();
         let mut ddu_gpu: Vec<f32> = (0..4 * q).map(|i| 0.03 * (i as f32)).collect();
         let mut ddu_cpu = ddu_gpu.clone();
-        gpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_gpu, &mut qd_gpu],
-        )
-        .unwrap();
-        cpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_cpu, &mut qd_cpu],
-        )
-        .unwrap();
+        gpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_gpu, &mut qd_gpu])
+            .unwrap();
+        cpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_cpu, &mut qd_cpu])
+            .unwrap();
         for i in 0..4 * q {
             assert!(
                 (ddu_gpu[i] - ddu_cpu[i]).abs() < 4.0e-5,
@@ -5718,20 +5684,10 @@ mod tests {
         let mut qd_cpu = qd_gpu.clone();
         let mut ddu_gpu: Vec<f32> = (0..6 * q).map(|i| -0.01 * (i as f32)).collect();
         let mut ddu_cpu = ddu_gpu.clone();
-        gpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_gpu, &mut qd_gpu],
-        )
-        .unwrap();
-        cpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_cpu, &mut qd_cpu],
-        )
-        .unwrap();
+        gpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_gpu, &mut qd_gpu])
+            .unwrap();
+        cpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_cpu, &mut qd_cpu])
+            .unwrap();
         for i in 0..6 * q {
             assert!(
                 (ddu_gpu[i] - ddu_cpu[i]).abs() < 4.0e-5,
@@ -5761,11 +5717,9 @@ mod tests {
         let input: Vec<f32> = (0..n).map(|i| i as f32 * 0.07).collect();
         let mut out_gpu = vec![0.0_f32; n];
         let mut out_cpu = vec![0.0_f32; n];
-        gpu
-            .apply(&[], q, &[input.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[input.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[input.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[input.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         assert_eq!(out_gpu, out_cpu);
     }
@@ -5842,11 +5796,9 @@ mod tests {
         let input: Vec<f32> = (0..n).map(|i| i as f32 * 0.11).collect();
         let mut out_gpu = vec![0.0_f32; n];
         let mut out_cpu = vec![0.0_f32; n];
-        gpu
-            .apply(&[], q, &[input.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[input.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[input.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[input.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         assert_eq!(out_gpu, out_cpu);
     }
@@ -5869,11 +5821,9 @@ mod tests {
         let input: Vec<f32> = (0..n_in).map(|i| (i as f32) * 0.13 - 0.5).collect();
         let mut out_gpu = vec![0.0_f32; q];
         let mut out_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(&[], q, &[input.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[input.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[input.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[input.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         assert_eq!(out_gpu, out_cpu);
     }
@@ -5893,9 +5843,7 @@ mod tests {
         let q = 23usize;
         let ncomp = 4usize;
         let dv: Vec<f32> = (0..q).map(|i| (i as f32) * 0.07 - 0.2).collect();
-        let mut du_gpu: Vec<f32> = (0..q * ncomp)
-            .map(|i| 0.05 + (i as f32) * 0.03)
-            .collect();
+        let mut du_gpu: Vec<f32> = (0..q * ncomp).map(|i| 0.05 + (i as f32) * 0.03).collect();
         let mut du_cpu = du_gpu.clone();
         gpu.apply_operator_transpose(&[], q, &[dv.as_slice()], &mut [&mut du_gpu])
             .unwrap();
@@ -5937,21 +5885,9 @@ mod tests {
         let v: Vec<f32> = (0..q * 2).map(|i| (i as f32) * -0.04 + 0.3).collect();
         let mut w_gpu = vec![0.0_f32; q];
         let mut w_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(
-                &[],
-                q,
-                &[u.as_slice(), v.as_slice()],
-                &mut [&mut w_gpu],
-            )
+        gpu.apply(&[], q, &[u.as_slice(), v.as_slice()], &mut [&mut w_gpu])
             .unwrap();
-        cpu
-            .apply(
-                &[],
-                q,
-                &[u.as_slice(), v.as_slice()],
-                &mut [&mut w_cpu],
-            )
+        cpu.apply(&[], q, &[u.as_slice(), v.as_slice()], &mut [&mut w_cpu])
             .unwrap();
         for i in 0..q {
             assert!(
@@ -5980,21 +5916,9 @@ mod tests {
         let v: Vec<f32> = (0..q * 3).map(|i| (i as f32 + 1.0).recip()).collect();
         let mut w_gpu = vec![0.0_f32; q];
         let mut w_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(
-                &[],
-                q,
-                &[u.as_slice(), v.as_slice()],
-                &mut [&mut w_gpu],
-            )
+        gpu.apply(&[], q, &[u.as_slice(), v.as_slice()], &mut [&mut w_gpu])
             .unwrap();
-        cpu
-            .apply(
-                &[],
-                q,
-                &[u.as_slice(), v.as_slice()],
-                &mut [&mut w_cpu],
-            )
+        cpu.apply(&[], q, &[u.as_slice(), v.as_slice()], &mut [&mut w_cpu])
             .unwrap();
         for i in 0..q {
             assert!(
@@ -6024,11 +5948,9 @@ mod tests {
         let input: Vec<f32> = (0..q).map(|i| i as f32 * 0.05).collect();
         let mut out_gpu = vec![0.0_f32; q];
         let mut out_cpu = vec![0.0_f32; q];
-        gpu
-            .apply(&ctx, q, &[input.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&ctx, q, &[input.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&ctx, q, &[input.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&ctx, q, &[input.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..q {
             assert!(
@@ -6089,11 +6011,9 @@ mod tests {
         let qd: Vec<f32> = (0..q).map(|i| 0.5 + i as f32 * 0.03).collect();
         let mut out_gpu = vec![0.0_f32; 2 * q];
         let mut out_cpu = vec![0.0_f32; 2 * q];
-        gpu
-            .apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..2 * q {
             assert!(
@@ -6122,11 +6042,9 @@ mod tests {
         let qd: Vec<f32> = (0..q).map(|i| 0.5 + i as f32 * 0.03).collect();
         let mut out_gpu = vec![0.0_f32; 3 * q];
         let mut out_cpu = vec![0.0_f32; 3 * q];
-        gpu
-            .apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[u.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..3 * q {
             assert!(
@@ -6155,11 +6073,9 @@ mod tests {
         let qd: Vec<f32> = (0..q).map(|i| 0.5 + i as f32 * 0.03).collect();
         let mut out_gpu = vec![0.0_f32; 2 * q];
         let mut out_cpu = vec![0.0_f32; 2 * q];
-        gpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..2 * q {
             assert!(
@@ -6188,11 +6104,9 @@ mod tests {
         let qd: Vec<f32> = (0..q).map(|i| 0.5 + i as f32 * 0.03).collect();
         let mut out_gpu = vec![0.0_f32; 3 * q];
         let mut out_cpu = vec![0.0_f32; 3 * q];
-        gpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..3 * q {
             assert!(
@@ -6218,16 +6132,12 @@ mod tests {
         let cpu = reed_cpu::Vector2Poisson2DApply::new();
         let q = 36usize;
         let du: Vec<f32> = (0..4 * q).map(|i| (i as f32) * 0.015 - 0.2).collect();
-        let qd: Vec<f32> = (0..4 * q)
-            .map(|i| 0.2 + (i as f32) * 0.006)
-            .collect();
+        let qd: Vec<f32> = (0..4 * q).map(|i| 0.2 + (i as f32) * 0.006).collect();
         let mut out_gpu = vec![0.0_f32; 4 * q];
         let mut out_cpu = vec![0.0_f32; 4 * q];
-        gpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..4 * q {
             assert!(
@@ -6253,16 +6163,12 @@ mod tests {
         let cpu = reed_cpu::Vector3Poisson2DApply::new();
         let q = 36usize;
         let du: Vec<f32> = (0..6 * q).map(|i| (i as f32) * 0.012 - 0.15).collect();
-        let qd: Vec<f32> = (0..4 * q)
-            .map(|i| 0.18 + (i as f32) * 0.005)
-            .collect();
+        let qd: Vec<f32> = (0..4 * q).map(|i| 0.18 + (i as f32) * 0.005).collect();
         let mut out_gpu = vec![0.0_f32; 6 * q];
         let mut out_cpu = vec![0.0_f32; 6 * q];
-        gpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..6 * q {
             assert!(
@@ -6288,16 +6194,12 @@ mod tests {
         let cpu = reed_cpu::Vector3Poisson3DApply::new();
         let q = 27usize;
         let du: Vec<f32> = (0..9 * q).map(|i| (i as f32) * 0.011 - 0.2).collect();
-        let qd: Vec<f32> = (0..9 * q)
-            .map(|i| 0.14 + (i as f32) * 0.004)
-            .collect();
+        let qd: Vec<f32> = (0..9 * q).map(|i| 0.14 + (i as f32) * 0.004).collect();
         let mut out_gpu = vec![0.0_f32; 9 * q];
         let mut out_cpu = vec![0.0_f32; 9 * q];
-        gpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
+        gpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_gpu])
             .unwrap();
-        cpu
-            .apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
+        cpu.apply(&[], q, &[du.as_slice(), qd.as_slice()], &mut [&mut out_cpu])
             .unwrap();
         for i in 0..9 * q {
             assert!(
@@ -6327,20 +6229,10 @@ mod tests {
         let mut qd_cpu = qd_gpu.clone();
         let mut ddu_gpu: Vec<f32> = (0..9 * q).map(|i| 0.02 * (i as isize as f32)).collect();
         let mut ddu_cpu = ddu_gpu.clone();
-        gpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_gpu, &mut qd_gpu],
-        )
-        .unwrap();
-        cpu.apply_operator_transpose(
-            &[],
-            q,
-            &[ddv.as_slice()],
-            &mut [&mut ddu_cpu, &mut qd_cpu],
-        )
-        .unwrap();
+        gpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_gpu, &mut qd_gpu])
+            .unwrap();
+        cpu.apply_operator_transpose(&[], q, &[ddv.as_slice()], &mut [&mut ddu_cpu, &mut qd_cpu])
+            .unwrap();
         for i in 0..9 * q {
             assert!(
                 (ddu_gpu[i] - ddu_cpu[i]).abs() < 5.0e-5,

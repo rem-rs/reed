@@ -42,9 +42,7 @@ fn validate_composite_suboperators<T: Scalar>(ops: &[&dyn OperatorTrait<T>]) -> 
     Ok(())
 }
 
-fn merge_vector_len_hints_strict(
-    hints: impl Iterator<Item = Option<usize>>,
-) -> ReedResult<()> {
+fn merge_vector_len_hints_strict(hints: impl Iterator<Item = Option<usize>>) -> ReedResult<()> {
     let mut expected: Option<usize> = None;
     for h in hints {
         if let Some(n) = h {
@@ -302,7 +300,9 @@ impl<T: Scalar> OperatorTrait<T> for CompositeOperator<T> {
 
     fn operator_supports_assemble(&self, kind: OperatorAssembleKind) -> bool {
         match kind {
-            OperatorAssembleKind::FdmElementInverse | OperatorAssembleKind::LinearCsrNumeric => false,
+            OperatorAssembleKind::FdmElementInverse | OperatorAssembleKind::LinearCsrNumeric => {
+                false
+            }
             _ => self.ops.iter().all(|o| o.operator_supports_assemble(kind)),
         }
     }
@@ -316,13 +316,15 @@ impl<T: Scalar> OperatorTrait<T> for CompositeOperator<T> {
 
     fn linear_assemble(&self) -> ReedResult<()> {
         Err(ReedError::Operator(
-            "CompositeOperator: linear_assemble is not supported (call on each sub-operator)".into(),
+            "CompositeOperator: linear_assemble is not supported (call on each sub-operator)"
+                .into(),
         ))
     }
 
     fn linear_assemble_add(&self) -> ReedResult<()> {
         Err(ReedError::Operator(
-            "CompositeOperator: linear_assemble_add is not supported (call on each sub-operator)".into(),
+            "CompositeOperator: linear_assemble_add is not supported (call on each sub-operator)"
+                .into(),
         ))
     }
 
@@ -594,7 +596,9 @@ impl<'a, T: Scalar> OperatorTrait<T> for CompositeOperatorBorrowed<'a, T> {
 
     fn operator_supports_assemble(&self, kind: OperatorAssembleKind) -> bool {
         match kind {
-            OperatorAssembleKind::FdmElementInverse | OperatorAssembleKind::LinearCsrNumeric => false,
+            OperatorAssembleKind::FdmElementInverse | OperatorAssembleKind::LinearCsrNumeric => {
+                false
+            }
             _ => self.ops.iter().all(|o| o.operator_supports_assemble(kind)),
         }
     }
@@ -671,8 +675,8 @@ mod tests {
     use crate::gallery::MassApplyInterpTimesWeight;
     use crate::operator::{FieldVector, OperatorBuilder};
     use crate::vector::CpuVector;
-    use reed_core::enums::QuadMode;
     use reed_core::csr::{CsrMatrix, CsrPattern};
+    use reed_core::enums::QuadMode;
     use reed_core::operator::{OperatorAssembleKind, OperatorTransposeRequest};
     use reed_core::qfunction::QFunctionTrait;
 
@@ -902,8 +906,9 @@ mod tests {
 
     #[test]
     fn composite_operator_create_fdm_element_inverse_errors() {
-        let c = CompositeOperator::new(vec![Box::new(ScaleOp { n: 2, scale: 1.0 })
-            as Box<dyn OperatorTrait<f64>>])
+        let c = CompositeOperator::new(vec![
+            Box::new(ScaleOp { n: 2, scale: 1.0 }) as Box<dyn OperatorTrait<f64>>
+        ])
         .unwrap();
         let msg = match c.operator_create_fdm_element_inverse() {
             Err(e) => e.to_string(),
@@ -917,8 +922,9 @@ mod tests {
 
     #[test]
     fn composite_operator_create_fdm_element_inverse_jacobi_errors() {
-        let c = CompositeOperator::new(vec![Box::new(ScaleOp { n: 2, scale: 1.0 })
-            as Box<dyn OperatorTrait<f64>>])
+        let c = CompositeOperator::new(vec![
+            Box::new(ScaleOp { n: 2, scale: 1.0 }) as Box<dyn OperatorTrait<f64>>
+        ])
         .unwrap();
         let msg = match c.operator_create_fdm_element_inverse_jacobi() {
             Err(e) => e.to_string(),
@@ -933,8 +939,9 @@ mod tests {
 
     #[test]
     fn composite_linear_assemble_add_errors() {
-        let c = CompositeOperator::new(vec![Box::new(ScaleOp { n: 2, scale: 1.0 })
-            as Box<dyn OperatorTrait<f64>>])
+        let c = CompositeOperator::new(vec![
+            Box::new(ScaleOp { n: 2, scale: 1.0 }) as Box<dyn OperatorTrait<f64>>
+        ])
         .unwrap();
         let msg = c.linear_assemble_add().unwrap_err().to_string();
         assert!(
@@ -945,8 +952,9 @@ mod tests {
 
     #[test]
     fn composite_linear_assemble_csr_matrix_add_errors() {
-        let c = CompositeOperator::new(vec![Box::new(ScaleOp { n: 2, scale: 1.0 })
-            as Box<dyn OperatorTrait<f64>>])
+        let c = CompositeOperator::new(vec![
+            Box::new(ScaleOp { n: 2, scale: 1.0 }) as Box<dyn OperatorTrait<f64>>
+        ])
         .unwrap();
         let pat = CsrPattern {
             nrows: 2,
@@ -958,7 +966,10 @@ mod tests {
             pattern: pat,
             values: vec![0.0_f64, 0.0_f64],
         };
-        let msg = c.linear_assemble_csr_matrix_add(&mut m).unwrap_err().to_string();
+        let msg = c
+            .linear_assemble_csr_matrix_add(&mut m)
+            .unwrap_err()
+            .to_string();
         assert!(
             msg.contains("CompositeOperator") && msg.contains("linear_assemble_csr_matrix_add"),
             "{msg}"
@@ -967,8 +978,9 @@ mod tests {
 
     #[test]
     fn composite_linear_assemble_ceed_matrix_errors() {
-        let c = CompositeOperator::new(vec![Box::new(ScaleOp { n: 2, scale: 1.0 })
-            as Box<dyn OperatorTrait<f64>>])
+        let c = CompositeOperator::new(vec![
+            Box::new(ScaleOp { n: 2, scale: 1.0 }) as Box<dyn OperatorTrait<f64>>
+        ])
         .unwrap();
         let mut dense = CeedMatrix::<f64>::dense_col_major_symbolic(2, 2).unwrap();
         let msg = c
@@ -1016,7 +1028,10 @@ mod tests {
             pattern: pat,
             values: vec![0.0_f64, 0.0_f64],
         };
-        let msg = c.linear_assemble_csr_matrix_add(&mut m).unwrap_err().to_string();
+        let msg = c
+            .linear_assemble_csr_matrix_add(&mut m)
+            .unwrap_err()
+            .to_string();
         assert!(
             msg.contains("CompositeOperatorBorrowed")
                 && msg.contains("linear_assemble_csr_matrix_add"),
@@ -1122,10 +1137,7 @@ mod tests {
             ))
         }
 
-        fn linear_assemble_diagonal(
-            &self,
-            assembled: &mut dyn VectorTrait<f64>,
-        ) -> ReedResult<()> {
+        fn linear_assemble_diagonal(&self, assembled: &mut dyn VectorTrait<f64>) -> ReedResult<()> {
             assembled.set_value(0.0)?;
             Ok(())
         }
@@ -1145,11 +1157,15 @@ mod tests {
             let (_, x) = inputs
                 .iter()
                 .find(|(name, _)| *name == "x")
-                .ok_or_else(|| ReedError::Operator("NamedBuffersOnlyOp: missing input 'x'".into()))?;
+                .ok_or_else(|| {
+                    ReedError::Operator("NamedBuffersOnlyOp: missing input 'x'".into())
+                })?;
             let (_, y) = outputs
                 .iter_mut()
                 .find(|(name, _)| *name == "x")
-                .ok_or_else(|| ReedError::Operator("NamedBuffersOnlyOp: missing output 'x'".into()))?;
+                .ok_or_else(|| {
+                    ReedError::Operator("NamedBuffersOnlyOp: missing output 'x'".into())
+                })?;
             if x.len() != y.len() {
                 return Err(ReedError::Operator(
                     "NamedBuffersOnlyOp: input/output length mismatch".into(),
@@ -1170,11 +1186,15 @@ mod tests {
             let (_, x) = inputs
                 .iter()
                 .find(|(name, _)| *name == "x")
-                .ok_or_else(|| ReedError::Operator("NamedBuffersOnlyOp: missing input 'x'".into()))?;
+                .ok_or_else(|| {
+                    ReedError::Operator("NamedBuffersOnlyOp: missing input 'x'".into())
+                })?;
             let (_, y) = outputs
                 .iter_mut()
                 .find(|(name, _)| *name == "x")
-                .ok_or_else(|| ReedError::Operator("NamedBuffersOnlyOp: missing output 'x'".into()))?;
+                .ok_or_else(|| {
+                    ReedError::Operator("NamedBuffersOnlyOp: missing output 'x'".into())
+                })?;
             if x.len() != y.len() {
                 return Err(ReedError::Operator(
                     "NamedBuffersOnlyOp: input/output length mismatch".into(),
@@ -1271,7 +1291,7 @@ mod tests {
 
         let op_a = OperatorBuilder::new()
             .qfunction(
-                Box::new(MassApplyInterpTimesWeight::default()) as Box<dyn QFunctionTrait<f64>>,
+                Box::new(MassApplyInterpTimesWeight::default()) as Box<dyn QFunctionTrait<f64>>
             )
             .field("u", Some(&r), Some(&b), FieldVector::Active)
             .field("w", None, Some(&b), FieldVector::Passive(&passive_dummy))
@@ -1279,7 +1299,7 @@ mod tests {
             .build()?;
         let op_b = OperatorBuilder::new()
             .qfunction(
-                Box::new(MassApplyInterpTimesWeight::default()) as Box<dyn QFunctionTrait<f64>>,
+                Box::new(MassApplyInterpTimesWeight::default()) as Box<dyn QFunctionTrait<f64>>
             )
             .field("u", Some(&r), Some(&b), FieldVector::Active)
             .field("w", None, Some(&b), FieldVector::Passive(&passive_dummy))
@@ -1408,14 +1428,8 @@ mod tests {
     #[test]
     fn composite_borrowed_apply_sums_suboperators() {
         let n = 2usize;
-        let a = ScaleOp {
-            n,
-            scale: 1.0,
-        };
-        let b = ScaleOp {
-            n,
-            scale: 2.0,
-        };
+        let a = ScaleOp { n, scale: 1.0 };
+        let b = ScaleOp { n, scale: 2.0 };
         let comp = CompositeOperatorBorrowed::new(vec![
             &a as &dyn OperatorTrait<f64>,
             &b as &dyn OperatorTrait<f64>,

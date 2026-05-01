@@ -113,9 +113,7 @@ impl<T: Scalar> WgpuElemRestriction<T> {
         if TypeId::of::<T>() != TypeId::of::<f64>() {
             return None;
         }
-        Some(unsafe {
-            std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len())
-        })
+        Some(unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr().cast(), data.len()) })
     }
 
     fn local_size(&self) -> usize {
@@ -165,15 +163,7 @@ impl<T: Scalar> WgpuElemRestriction<T> {
                 *compstride,
             ),
             RestrictionLayout::Strided { strides } => Self::try_apply_no_transpose_gpu_f64_strided(
-                runtime,
-                nelem,
-                elemsize,
-                ncomp,
-                lsize,
-                local_size,
-                u,
-                v,
-                *strides,
+                runtime, nelem, elemsize, ncomp, lsize, local_size, u, v, *strides,
             ),
         }
     }
@@ -1093,9 +1083,9 @@ fn map_readback_f64(
         ));
     }
     for (o, chunk) in out.iter_mut().zip(data.chunks_exact(8)) {
-        let arr: [u8; 8] = chunk.try_into().map_err(|_| {
-            ReedError::ElemRestriction("f64 readback chunk size".into())
-        })?;
+        let arr: [u8; 8] = chunk
+            .try_into()
+            .map_err(|_| ReedError::ElemRestriction("f64 readback chunk size".into()))?;
         *o = f64::from_le_bytes(arr);
     }
     drop(data);

@@ -275,7 +275,8 @@ impl<T: Scalar> QFunctionTrait<T> for MassApply {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
             return Err(ReedError::QFunction(
-                "MassApply transpose expects 1 output cotangent and 2 input cotangent buffers".into(),
+                "MassApply transpose expects 1 output cotangent and 2 input cotangent buffers"
+                    .into(),
             ));
         }
         let dv = output_cotangents[0];

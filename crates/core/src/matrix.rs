@@ -9,7 +9,11 @@ use crate::{
 /// Backing storage for a Reed matrix handle.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CeedMatrixStorage<T: Scalar> {
-    DenseColMajor { nrows: usize, ncols: usize, values: Vec<T> },
+    DenseColMajor {
+        nrows: usize,
+        ncols: usize,
+        values: Vec<T>,
+    },
     Csr(CsrMatrix<T>),
 }
 
@@ -128,4 +132,3 @@ mod tests {
         assert!(m.numeric_done());
     }
 }
-

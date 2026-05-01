@@ -1,10 +1,6 @@
 use reed_core::{
-    csr::csr_sparsity_from_offset_restriction,
-    elem_restriction::ElemRestrictionTrait,
-    enums::TransposeMode,
-    error::ReedResult,
-    scalar::Scalar,
-    CsrPattern, ReedError,
+    csr::csr_sparsity_from_offset_restriction, elem_restriction::ElemRestrictionTrait,
+    enums::TransposeMode, error::ReedResult, scalar::Scalar, CsrPattern, ReedError,
 };
 
 #[cfg(feature = "parallel")]

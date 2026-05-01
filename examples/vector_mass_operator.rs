@@ -95,10 +95,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("vector_mass_operator (2D, Vector2MassApply)");
     println!("nelem_1d={nelem_1d}, p={p}, q={q}");
-    println!("|y0|_1={:.12e}, |y1|_1={:.12e}, ratio={:.6}", norm0, norm1, ratio);
+    println!(
+        "|y0|_1={:.12e}, |y1|_1={:.12e}, ratio={:.6}",
+        norm0, norm1, ratio
+    );
     if (ratio - 2.0).abs() > 1e-10 {
         return Err(format!("unexpected component ratio: got {}, expected 2", ratio).into());
     }
     Ok(())
 }
-

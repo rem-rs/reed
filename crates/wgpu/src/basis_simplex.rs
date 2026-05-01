@@ -260,9 +260,8 @@ impl<T: Scalar> WgpuSimplexBasis<T> {
 
         map_readback_f32(&runtime.device, &readback, &mut v_f32)?;
         for (dst, src) in v.iter_mut().zip(v_f32.iter()) {
-            *dst = NumCast::from(*src).ok_or_else(|| {
-                ReedError::Basis("simplex interp f32->T readback failed".into())
-            })?;
+            *dst = NumCast::from(*src)
+                .ok_or_else(|| ReedError::Basis("simplex interp f32->T readback failed".into()))?;
         }
         Ok(true)
     }
@@ -422,9 +421,8 @@ impl<T: Scalar> WgpuSimplexBasis<T> {
 
         map_readback_f32(&runtime.device, &readback, &mut v_f32)?;
         for (dst, src) in v.iter_mut().zip(v_f32.iter()) {
-            *dst = NumCast::from(*src).ok_or_else(|| {
-                ReedError::Basis("simplex grad f32->T readback failed".into())
-            })?;
+            *dst = NumCast::from(*src)
+                .ok_or_else(|| ReedError::Basis("simplex grad f32->T readback failed".into()))?;
         }
         Ok(true)
     }
@@ -466,9 +464,8 @@ impl<T: Scalar> WgpuSimplexBasis<T> {
         let mut v_f32 = vec![0.0_f32; out_size];
         dispatch_basis_weight_tile_f32(runtime, &weights_f32, num_elem, num_qpoints, &mut v_f32)?;
         for (dst, src) in v.iter_mut().zip(v_f32.iter()) {
-            *dst = NumCast::from(*src).ok_or_else(|| {
-                ReedError::Basis("simplex weight f32->T readback failed".into())
-            })?;
+            *dst = NumCast::from(*src)
+                .ok_or_else(|| ReedError::Basis("simplex weight f32->T readback failed".into()))?;
         }
         Ok(true)
     }
@@ -537,9 +534,8 @@ impl<T: Scalar> WgpuSimplexBasis<T> {
                 qcomp,
             )?;
             for (dst, src) in v.iter_mut().zip(v_f32.iter()) {
-                *dst = NumCast::from(*src).ok_or_else(|| {
-                    ReedError::Basis("simplex div transpose readback".into())
-                })?;
+                *dst = NumCast::from(*src)
+                    .ok_or_else(|| ReedError::Basis("simplex div transpose readback".into()))?;
             }
             return Ok(true);
         }
@@ -1236,11 +1232,13 @@ impl<T: Scalar> BasisTrait<T> for WgpuSimplexBasis<T> {
         {
             return Ok(());
         }
-        if matches!(eval_mode, EvalMode::Div) && self.try_apply_div_gpu(num_elem, transpose, u, v)?
+        if matches!(eval_mode, EvalMode::Div)
+            && self.try_apply_div_gpu(num_elem, transpose, u, v)?
         {
             return Ok(());
         }
-        if matches!(eval_mode, EvalMode::Curl) && self.try_apply_curl_gpu(num_elem, transpose, u, v)?
+        if matches!(eval_mode, EvalMode::Curl)
+            && self.try_apply_curl_gpu(num_elem, transpose, u, v)?
         {
             return Ok(());
         }

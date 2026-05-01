@@ -25,7 +25,7 @@ pub use reed_core::{
 pub use reed_cpu::{
     q_function_by_name, CompositeOperator, CompositeOperatorBorrowed, CpuBackend,
     CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, CpuFdmTensorInverseOperator,
-    CpuOperator, FdmOperatorKind, FDM_DENSE_MAX_N, FieldVector, OperatorBuilder,
+    CpuOperator, FdmOperatorKind, FieldVector, OperatorBuilder, FDM_DENSE_MAX_N,
     QFUNCTION_INTERIOR_GALLERY_NAMES, QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES,
 };
 #[cfg(feature = "wgpu-backend")]
@@ -231,14 +231,8 @@ impl<T: Scalar> Reed<T> {
         lsize: usize,
         offsets: &[i64],
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
-        self.inner.elem_restriction_ceed_int_offsets(
-            nelem,
-            elemsize,
-            ncomp,
-            compstride,
-            lsize,
-            offsets,
-        )
+        self.inner
+            .elem_restriction_ceed_int_offsets(nelem, elemsize, ncomp, compstride, lsize, offsets)
     }
 
     /// See [`reed_core::Reed::elem_restriction_at_points_ceed_int_offsets`].

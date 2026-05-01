@@ -47,9 +47,9 @@ pub fn invert_dense_col_major<T: Scalar>(a: &[T], n: usize) -> ReedResult<Vec<T>
     if n == 0 {
         return Ok(Vec::new());
     }
-    let two_n = n.checked_mul(2).ok_or_else(|| {
-        ReedError::Operator("invert_dense_col_major: n*2 overflow".into())
-    })?;
+    let two_n = n
+        .checked_mul(2)
+        .ok_or_else(|| ReedError::Operator("invert_dense_col_major: n*2 overflow".into()))?;
     let len = n.checked_mul(two_n).ok_or_else(|| {
         ReedError::Operator("invert_dense_col_major: augmented matrix size overflow".into())
     })?;

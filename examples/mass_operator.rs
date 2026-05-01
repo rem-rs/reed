@@ -71,7 +71,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     OperatorTrait::linear_assemble_add_ceed_matrix(&op_mass, &mut dense)?;
     if let CeedMatrixStorage::DenseColMajor { values, .. } = dense.storage() {
-        println!("Dense handle A(0,0)={} after add={}", dense_once[0], values[0]);
+        println!(
+            "Dense handle A(0,0)={} after add={}",
+            dense_once[0], values[0]
+        );
     }
 
     let u = reed.vector_from_slice(&vec![1.0_f64; ndofs])?;

@@ -261,14 +261,7 @@ impl<T: Scalar> Reed<T> {
         offsets: &[i64],
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
         let v = ceed_int_offsets_to_i32(offsets)?;
-        self.elem_restriction_at_points(
-            nelem,
-            npoints_per_elem,
-            ncomp,
-            compstride,
-            lsize,
-            &v,
-        )
+        self.elem_restriction_at_points(nelem, npoints_per_elem, ncomp, compstride, lsize, &v)
     }
 
     /// Like [`Self::strided_elem_restriction`], but accepts `i64` strides (libCEED `CeedInt[3]`).

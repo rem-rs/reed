@@ -1,9 +1,9 @@
 use reed::{
     CeedInt, CeedMatrix, CeedMatrixStorage, CompositeOperator, CpuOperator, CsrMatrix,
     ElemRestrictionTrait, ElemTopology, EvalMode, FieldVector, OperatorAssembleKind, OperatorTrait,
-    OperatorTransposeRequest, QFunctionCategory, QFunctionContext, QFunctionField,
-    QuadMode, QFUNCTION_INTERIOR_GALLERY_NAMES, QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES, Reed,
-    ReedError, ReedResult, TransposeMode, VectorTrait,
+    OperatorTransposeRequest, QFunctionCategory, QFunctionContext, QFunctionField, QuadMode, Reed,
+    ReedError, ReedResult, TransposeMode, VectorTrait, QFUNCTION_INTERIOR_GALLERY_NAMES,
+    QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES,
 };
 
 #[test]
@@ -117,7 +117,9 @@ fn test_cpu_operator_libceed_dense_linear_assemble_and_fdm_stub() {
     OperatorTrait::linear_assemble(&op).unwrap();
     assert_eq!(op.dense_linear_assembly_n(), Some(2));
     assert!(op.dense_linear_assembly_numeric_ready());
-    let (n, a) = op.assembled_linear_matrix_col_major().expect("dense matrix after assemble");
+    let (n, a) = op
+        .assembled_linear_matrix_col_major()
+        .expect("dense matrix after assemble");
     assert_eq!(n, 2);
     assert_eq!(a.len(), 4);
     for i in 0..n {
@@ -455,7 +457,9 @@ fn test_poisson_1d_csr_assembly_matches_dense_columns() {
         &op,
         OperatorAssembleKind::LinearCsrNumeric
     ));
-    let csr = op.linear_assemble_csr_from_elem_restriction(r_u.as_ref()).unwrap();
+    let csr = op
+        .linear_assemble_csr_from_elem_restriction(r_u.as_ref())
+        .unwrap();
 
     let pat = csr.pattern.clone();
     let mut csr_acc = CsrMatrix {
@@ -700,7 +704,12 @@ fn test_cpu_operator_mass_apply_interp_times_weight_adjoint_matches_forward() {
                 .unwrap(),
         )
         .field("u", Some(&*r_u), Some(&*b_u), FieldVector::Active)
-        .field("w", None, Some(&*b_u), FieldVector::Passive(&*passive_dummy))
+        .field(
+            "w",
+            None,
+            Some(&*b_u),
+            FieldVector::Passive(&*passive_dummy),
+        )
         .field("v", Some(&*r_u), Some(&*b_u), FieldVector::Active)
         .build()
         .unwrap();
@@ -761,7 +770,12 @@ fn test_cpu_operator_mass_apply_interp_times_weight_named_buffers_adjoint_inner_
                 .unwrap(),
         )
         .field("u", Some(&*r_u), Some(&*b_u), FieldVector::Active)
-        .field("w", None, Some(&*b_u), FieldVector::Passive(&*passive_dummy))
+        .field(
+            "w",
+            None,
+            Some(&*b_u),
+            FieldVector::Passive(&*passive_dummy),
+        )
         .field("v", Some(&*r_u), Some(&*b_u), FieldVector::Active)
         .build()
         .unwrap();
@@ -1104,7 +1118,10 @@ fn test_composite_operator_refs_two_mass_matches_double_single() {
         .iter()
         .zip(y_single.as_slice().iter())
     {
-        assert!((a - b).abs() < 50.0 * f64::EPSILON, "composite {a} vs 2*single {b}");
+        assert!(
+            (a - b).abs() < 50.0 * f64::EPSILON,
+            "composite {a} vs 2*single {b}"
+        );
     }
 }
 
@@ -1196,7 +1213,8 @@ fn test_composite_operator_refs_ceed_matrix_fallback_sum_suboperators() {
     );
     match dense.storage() {
         CeedMatrixStorage::DenseColMajor { values, .. } => {
-            let mut dense_single = CeedMatrix::<f64>::dense_col_major_symbolic(ndofs, ndofs).unwrap();
+            let mut dense_single =
+                CeedMatrix::<f64>::dense_col_major_symbolic(ndofs, ndofs).unwrap();
             OperatorTrait::linear_assemble_ceed_matrix(&op_a, &mut dense_single).unwrap();
             let single_vals = match dense_single.storage() {
                 CeedMatrixStorage::DenseColMajor { values, .. } => values,
@@ -1369,7 +1387,9 @@ fn test_composite_operator_refs_rejects_multi_active_suboperator() {
         ("aux", &*aux as &dyn VectorTrait<f64>),
     ];
     let mut dual_out = [("v", &mut *y_ref as &mut dyn VectorTrait<f64>)];
-    op_dual.apply_add_field_buffers(&dual_in, &mut dual_out).unwrap();
+    op_dual
+        .apply_add_field_buffers(&dual_in, &mut dual_out)
+        .unwrap();
     for i in 0..ndofs {
         assert!((y_comp.as_slice()[i] - y_ref.as_slice()[i]).abs() < 1e-11);
     }
@@ -1540,10 +1560,7 @@ fn test_nested_composite_operator() {
             }
             Ok(())
         }
-        fn linear_assemble_diagonal(
-            &self,
-            assembled: &mut dyn VectorTrait<f64>,
-        ) -> ReedResult<()> {
+        fn linear_assemble_diagonal(&self, assembled: &mut dyn VectorTrait<f64>) -> ReedResult<()> {
             assembled.set_value(0.0)?;
             for i in 0..self.n {
                 assembled.as_mut_slice()[i] = self.scale;
@@ -1770,7 +1787,12 @@ fn test_wgpu_hybrid_mass_operator_apply_matches_cpu() {
         .operator_builder()
         .qfunction(reed_cpu.q_function_by_name("MassApply").unwrap())
         .field("u", Some(&*r_u_cpu), Some(&*b_u_cpu), FieldVector::Active)
-        .field("qdata", Some(&*r_q_cpu), None, FieldVector::Passive(&*q_cpu))
+        .field(
+            "qdata",
+            Some(&*r_q_cpu),
+            None,
+            FieldVector::Passive(&*q_cpu),
+        )
         .field("v", Some(&*r_u_cpu), Some(&*b_u_cpu), FieldVector::Active)
         .build()
         .unwrap();
@@ -1786,7 +1808,12 @@ fn test_wgpu_hybrid_mass_operator_apply_matches_cpu() {
         .operator_builder()
         .qfunction(reed_gpu.q_function_by_name("MassApply").unwrap())
         .field("u", Some(&*r_u_gpu), Some(&*b_u_gpu), FieldVector::Active)
-        .field("qdata", Some(&*r_q_gpu), None, FieldVector::Passive(&*q_gpu))
+        .field(
+            "qdata",
+            Some(&*r_q_gpu),
+            None,
+            FieldVector::Passive(&*q_gpu),
+        )
         .field("v", Some(&*r_u_gpu), Some(&*b_u_gpu), FieldVector::Active)
         .build()
         .unwrap();
@@ -1853,7 +1880,12 @@ fn test_wgpu_hybrid_mass_operator_transpose_matches_cpu() {
         .operator_builder()
         .qfunction(reed_cpu.q_function_by_name("MassApply").unwrap())
         .field("u", Some(&*r_u_cpu), Some(&*b_u_cpu), FieldVector::Active)
-        .field("qdata", Some(&*r_q_cpu), None, FieldVector::Passive(&*q_cpu))
+        .field(
+            "qdata",
+            Some(&*r_q_cpu),
+            None,
+            FieldVector::Passive(&*q_cpu),
+        )
         .field("v", Some(&*r_u_cpu), Some(&*b_u_cpu), FieldVector::Active)
         .build()
         .unwrap();
@@ -1862,7 +1894,12 @@ fn test_wgpu_hybrid_mass_operator_transpose_matches_cpu() {
         .operator_builder()
         .qfunction(reed_gpu.q_function_by_name("MassApply").unwrap())
         .field("u", Some(&*r_u_gpu), Some(&*b_u_gpu), FieldVector::Active)
-        .field("qdata", Some(&*r_q_gpu), None, FieldVector::Passive(&*q_gpu))
+        .field(
+            "qdata",
+            Some(&*r_q_gpu),
+            None,
+            FieldVector::Passive(&*q_gpu),
+        )
         .field("v", Some(&*r_u_gpu), Some(&*b_u_gpu), FieldVector::Active)
         .build()
         .unwrap();
@@ -1873,11 +1910,7 @@ fn test_wgpu_hybrid_mass_operator_transpose_matches_cpu() {
     let mut y_fwd_cpu = reed_cpu.vector(ndofs).unwrap();
     y_fwd_cpu.set_value(0.0).unwrap();
     op_cpu
-        .apply_with_transpose(
-            OperatorTransposeRequest::Forward,
-            &*w_cpu,
-            &mut *y_fwd_cpu,
-        )
+        .apply_with_transpose(OperatorTransposeRequest::Forward, &*w_cpu, &mut *y_fwd_cpu)
         .unwrap();
     let mut y_apply_cpu = reed_cpu.vector(ndofs).unwrap();
     y_apply_cpu.set_value(0.0).unwrap();
@@ -1892,11 +1925,7 @@ fn test_wgpu_hybrid_mass_operator_transpose_matches_cpu() {
     let mut y_fwd_gpu = reed_gpu.vector(ndofs).unwrap();
     y_fwd_gpu.set_value(0.0).unwrap();
     op_gpu
-        .apply_with_transpose(
-            OperatorTransposeRequest::Forward,
-            &*w_gpu,
-            &mut *y_fwd_gpu,
-        )
+        .apply_with_transpose(OperatorTransposeRequest::Forward, &*w_gpu, &mut *y_fwd_gpu)
         .unwrap();
     let mut y_apply_gpu = reed_gpu.vector(ndofs).unwrap();
     y_apply_gpu.set_value(0.0).unwrap();
@@ -1911,11 +1940,7 @@ fn test_wgpu_hybrid_mass_operator_transpose_matches_cpu() {
     let mut y_adj_cpu = reed_cpu.vector(ndofs).unwrap();
     y_adj_cpu.set_value(0.0).unwrap();
     op_cpu
-        .apply_with_transpose(
-            OperatorTransposeRequest::Adjoint,
-            &*w_cpu,
-            &mut *y_adj_cpu,
-        )
+        .apply_with_transpose(OperatorTransposeRequest::Adjoint, &*w_cpu, &mut *y_adj_cpu)
         .unwrap();
     for i in 0..ndofs {
         assert!(
@@ -1927,11 +1952,7 @@ fn test_wgpu_hybrid_mass_operator_transpose_matches_cpu() {
     let mut y_adj_gpu = reed_gpu.vector(ndofs).unwrap();
     y_adj_gpu.set_value(0.0).unwrap();
     op_gpu
-        .apply_with_transpose(
-            OperatorTransposeRequest::Adjoint,
-            &*w_gpu,
-            &mut *y_adj_gpu,
-        )
+        .apply_with_transpose(OperatorTransposeRequest::Adjoint, &*w_gpu, &mut *y_adj_gpu)
         .unwrap();
     for i in 0..ndofs {
         assert!(
@@ -2245,9 +2266,7 @@ fn test_wgpu_operator_mass2d_vector2_gpu_qfunction_matches_cpu() {
             .build()
             .unwrap();
 
-        let u = reed
-            .vector_from_slice(&vec![1.0_f32; 2 * ndofs])
-            .unwrap();
+        let u = reed.vector_from_slice(&vec![1.0_f32; 2 * ndofs]).unwrap();
         let mut v = reed.vector(2 * ndofs).unwrap();
         v.set_value(0.0_f32).unwrap();
         op_mass.apply(&*u, &mut *v).unwrap();
@@ -2378,9 +2397,7 @@ fn test_wgpu_operator_mass3d_vector3_gpu_qfunction_matches_cpu() {
             .build()
             .unwrap();
 
-        let u = reed
-            .vector_from_slice(&vec![1.0_f32; 3 * ndofs])
-            .unwrap();
+        let u = reed.vector_from_slice(&vec![1.0_f32; 3 * ndofs]).unwrap();
         let mut v = reed.vector(3 * ndofs).unwrap();
         v.set_value(0.0_f32).unwrap();
         op_mass.apply(&*u, &mut *v).unwrap();
@@ -2409,9 +2426,8 @@ fn test_wgpu_operator_poisson1d_gpu_poisson_qfunction_matches_cpu() {
     let rt = reed_wgpu::WgpuBackend::<f32>::new()
         .gpu_runtime()
         .expect("wgpu runtime");
-    let qf_gpu = Box::new(
-        reed_wgpu::Poisson1DApplyF32Wgpu::new(rt).expect("Poisson1DApplyF32Wgpu::new"),
-    );
+    let qf_gpu =
+        Box::new(reed_wgpu::Poisson1DApplyF32Wgpu::new(rt).expect("Poisson1DApplyF32Wgpu::new"));
 
     let run = |reed: &Reed<f32>, qf: Box<dyn QFunctionTrait<f32>>| -> Vec<f32> {
         let nelem = 2usize;
@@ -2496,7 +2512,8 @@ fn test_wgpu_operator_poisson1d_vector2_gpu_qfunction_matches_cpu() {
         .gpu_runtime()
         .expect("wgpu runtime");
     let qf_gpu = Box::new(
-        reed_wgpu::Vector2Poisson1DApplyF32Wgpu::new(rt).expect("Vector2Poisson1DApplyF32Wgpu::new"),
+        reed_wgpu::Vector2Poisson1DApplyF32Wgpu::new(rt)
+            .expect("Vector2Poisson1DApplyF32Wgpu::new"),
     );
 
     let run = |reed: &Reed<f32>, qf: Box<dyn QFunctionTrait<f32>>| -> Vec<f32> {
@@ -2600,9 +2617,8 @@ fn test_wgpu_operator_poisson2d_gpu_poisson_qfunction_matches_cpu() {
     let rt = reed_wgpu::WgpuBackend::<f32>::new()
         .gpu_runtime()
         .expect("wgpu runtime");
-    let qf_gpu = Box::new(
-        reed_wgpu::Poisson2DApplyF32Wgpu::new(rt).expect("Poisson2DApplyF32Wgpu::new"),
-    );
+    let qf_gpu =
+        Box::new(reed_wgpu::Poisson2DApplyF32Wgpu::new(rt).expect("Poisson2DApplyF32Wgpu::new"));
 
     let run = |reed: &Reed<f32>, qf: Box<dyn QFunctionTrait<f32>>| -> Vec<f32> {
         let dim = 2usize;
@@ -2666,9 +2682,7 @@ fn test_wgpu_operator_poisson2d_gpu_poisson_qfunction_matches_cpu() {
             .unwrap();
 
         // Scalar potential nodal values x + y on the 2×2 mesh (`examples/poisson.rs`).
-        let u = reed
-            .vector_from_slice(&[-2.0_f32, 0.0, 0.0, 2.0])
-            .unwrap();
+        let u = reed.vector_from_slice(&[-2.0_f32, 0.0, 0.0, 2.0]).unwrap();
         let mut v = reed.vector(ndofs).unwrap();
         v.set_value(0.0_f32).unwrap();
         op.apply(&*u, &mut *v).unwrap();
@@ -2715,7 +2729,8 @@ fn test_wgpu_operator_poisson2d_vector2_poisson2d_gpu_qfunction_matches_cpu() {
         .gpu_runtime()
         .expect("wgpu runtime");
     let qf_gpu = Box::new(
-        reed_wgpu::Vector2Poisson2DApplyF32Wgpu::new(rt).expect("Vector2Poisson2DApplyF32Wgpu::new"),
+        reed_wgpu::Vector2Poisson2DApplyF32Wgpu::new(rt)
+            .expect("Vector2Poisson2DApplyF32Wgpu::new"),
     );
 
     let run = |reed: &Reed<f32>, qf: Box<dyn QFunctionTrait<f32>>| -> Vec<f32> {
@@ -2780,9 +2795,7 @@ fn test_wgpu_operator_poisson2d_vector2_poisson2d_gpu_qfunction_matches_cpu() {
             .unwrap();
 
         let u = reed
-            .vector_from_slice(&[
-                -2.0_f32, 0.0, 0.0, 2.0, 1.0, -1.0, 0.5, -0.5,
-            ])
+            .vector_from_slice(&[-2.0_f32, 0.0, 0.0, 2.0, 1.0, -1.0, 0.5, -0.5])
             .unwrap();
         let mut v = reed.vector(2 * ndofs).unwrap();
         v.set_value(0.0_f32).unwrap();
@@ -2832,7 +2845,8 @@ fn test_wgpu_operator_poisson2d_vector3_poisson2d_gpu_qfunction_matches_cpu() {
         .gpu_runtime()
         .expect("wgpu runtime");
     let qf_gpu = Box::new(
-        reed_wgpu::Vector3Poisson2DApplyF32Wgpu::new(rt).expect("Vector3Poisson2DApplyF32Wgpu::new"),
+        reed_wgpu::Vector3Poisson2DApplyF32Wgpu::new(rt)
+            .expect("Vector3Poisson2DApplyF32Wgpu::new"),
     );
 
     let run = |reed: &Reed<f32>, qf: Box<dyn QFunctionTrait<f32>>| -> Vec<f32> {
@@ -2970,9 +2984,8 @@ fn test_wgpu_operator_poisson3d_gpu_poisson_qfunction_matches_cpu() {
     let rt = reed_wgpu::WgpuBackend::<f32>::new()
         .gpu_runtime()
         .expect("wgpu runtime");
-    let qf_gpu = Box::new(
-        reed_wgpu::Poisson3DApplyF32Wgpu::new(rt).expect("Poisson3DApplyF32Wgpu::new"),
-    );
+    let qf_gpu =
+        Box::new(reed_wgpu::Poisson3DApplyF32Wgpu::new(rt).expect("Poisson3DApplyF32Wgpu::new"));
 
     let run = |reed: &Reed<f32>, qf: Box<dyn QFunctionTrait<f32>>| -> Vec<f32> {
         let dim = 3usize;
@@ -4444,9 +4457,8 @@ fn test_at_points_gallery_aliases_resolve() {
         "IdentityAtPoints",
         "Poisson2DApplyAtPoints",
     ] {
-        reed.q_function_by_name(name).unwrap_or_else(|e| {
-            panic!("AtPoints gallery alias {name:?} should resolve: {e:?}")
-        });
+        reed.q_function_by_name(name)
+            .unwrap_or_else(|e| panic!("AtPoints gallery alias {name:?} should resolve: {e:?}"));
     }
 }
 
@@ -4657,9 +4669,7 @@ fn test_tensor_fdm_non_tensor_basis_falls_back_to_dense() {
     let reed = Reed::<f64>::init("/cpu/self").unwrap();
     // Use simplex basis with 1 component: poly=1 → 2 nodes/component.
     // ncomp=1 gives ndof=2, matching our elem restriction.
-    let basis = reed
-        .basis_h1_simplex(ElemTopology::Line, 1, 1, 2)
-        .unwrap();
+    let basis = reed.basis_h1_simplex(ElemTopology::Line, 1, 1, 2).unwrap();
     let ndof = 2;
     let nelem = 1;
     let ng = nelem * ndof;

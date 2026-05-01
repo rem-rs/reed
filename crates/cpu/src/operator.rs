@@ -5,10 +5,10 @@ use reed_core::{
     elem_restriction::ElemRestrictionTrait,
     enums::{EvalMode, TransposeMode},
     error::ReedResult,
+    matrix::{CeedMatrix, CeedMatrixStorage},
     operator::{OperatorAssembleKind, OperatorTrait, OperatorTransposeRequest},
     qfunction::QFunctionTrait,
     scalar::Scalar,
-    matrix::{CeedMatrix, CeedMatrixStorage},
     vector::VectorTrait,
     QFunctionContext, ReedError,
 };
@@ -358,10 +358,7 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
             }
         }
         found.ok_or_else(|| {
-            ReedError::Operator(format!(
-                "missing vector for active input field {:?}",
-                name
-            ))
+            ReedError::Operator(format!("missing vector for active input field {:?}", name))
         })
     }
 
@@ -382,10 +379,7 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
             }
         }
         found.ok_or_else(|| {
-            ReedError::Operator(format!(
-                "missing vector for active output field {:?}",
-                name
-            ))
+            ReedError::Operator(format!("missing vector for active output field {:?}", name))
         })
     }
 
@@ -579,10 +573,9 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
     /// canonical Jacobian at construction time; clearing later does not change an already-built
     /// [`crate::fdm_inverse::CpuFdmDenseInverseOperator`].
     pub fn clear_dense_linear_assembly(&self) -> ReedResult<()> {
-        let mut g = self
-            .dense_linear_assembly
-            .lock()
-            .map_err(|_| ReedError::Operator("clear_dense_linear_assembly: assembly mutex poisoned".into()))?;
+        let mut g = self.dense_linear_assembly.lock().map_err(|_| {
+            ReedError::Operator("clear_dense_linear_assembly: assembly mutex poisoned".into())
+        })?;
         *g = None;
         Ok(())
     }
@@ -592,7 +585,9 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
     /// This is a lightweight alternative when a full dense inverse is undesirable and can be used
     /// as a preconditioner-like approximation. Unlike `operator_create_fdm_element_inverse`, this
     /// does not build or invert a dense `n x n` matrix.
-    pub fn operator_create_fdm_element_inverse_jacobi(&self) -> ReedResult<Box<dyn OperatorTrait<T>>> {
+    pub fn operator_create_fdm_element_inverse_jacobi(
+        &self,
+    ) -> ReedResult<Box<dyn OperatorTrait<T>>> {
         self.check_ready()?;
         let n = self.active_global_dof_len()?;
         let mut diag = crate::vector::CpuVector::new(n);
@@ -607,9 +602,9 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
             }
             inv_diag[i] = T::ONE / d;
         }
-        Ok(Box::new(crate::fdm_inverse::CpuFdmJacobiInverseOperator::new(
-            inv_diag,
-        )))
+        Ok(Box::new(
+            crate::fdm_inverse::CpuFdmJacobiInverseOperator::new(inv_diag),
+        ))
     }
 
     /// Quick check whether tensor-FDM inverse is available for this operator
@@ -618,7 +613,8 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
         match self.input_plans.first() {
             Some(p) => {
                 let field = &self.fields[p.field_index];
-                field.basis
+                field
+                    .basis
                     .and_then(|b| {
                         if field.restriction.is_none() {
                             None
@@ -660,9 +656,12 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
         let nelem = self.num_elem;
 
         // Heuristic: check QFunction inputs for gradient-like field names -> Stiffness, else Mass.
-        let op_kind = if self.qfunction.inputs().iter().any(|f| {
-            f.name.contains("du") || f.name.contains("grad")
-        }) {
+        let op_kind = if self
+            .qfunction
+            .inputs()
+            .iter()
+            .any(|f| f.name.contains("du") || f.name.contains("grad"))
+        {
             FdmOperatorKind::Stiffness
         } else {
             FdmOperatorKind::Mass
@@ -671,8 +670,15 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
         let restriction_box = restriction.boxed_clone()?;
 
         let inv = CpuFdmTensorInverseOperator::new(
-            interp_1d, grad_1d, weights_1d, p, q, dim, nelem,
-            op_kind, restriction_box,
+            interp_1d,
+            grad_1d,
+            weights_1d,
+            p,
+            q,
+            dim,
+            nelem,
+            op_kind,
+            restriction_box,
         )?;
         Ok(Some(Box::new(inv)))
     }
@@ -680,12 +686,17 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
     /// Assemble into a libCEED-shaped matrix handle (set semantics).
     pub fn linear_assemble_ceed_matrix(&self, matrix: &mut CeedMatrix<T>) -> ReedResult<()> {
         match matrix.storage_mut() {
-            CeedMatrixStorage::DenseColMajor { nrows, ncols, values } => {
+            CeedMatrixStorage::DenseColMajor {
+                nrows,
+                ncols,
+                values,
+            } => {
                 self.linear_assemble_symbolic()?;
                 self.linear_assemble()?;
                 let (n, a) = self.assembled_linear_matrix_col_major().ok_or_else(|| {
                     ReedError::Operator(
-                        "linear_assemble_ceed_matrix: dense assembly slot is not numeric-ready".into(),
+                        "linear_assemble_ceed_matrix: dense assembly slot is not numeric-ready"
+                            .into(),
                     )
                 })?;
                 if *nrows != n || *ncols != n || values.len() != a.len() {
@@ -715,12 +726,17 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
     /// Assemble into a libCEED-shaped matrix handle (add semantics).
     pub fn linear_assemble_add_ceed_matrix(&self, matrix: &mut CeedMatrix<T>) -> ReedResult<()> {
         match matrix.storage_mut() {
-            CeedMatrixStorage::DenseColMajor { nrows, ncols, values } => {
+            CeedMatrixStorage::DenseColMajor {
+                nrows,
+                ncols,
+                values,
+            } => {
                 self.linear_assemble_symbolic()?;
                 self.linear_assemble()?;
                 let (n, a) = self.assembled_linear_matrix_col_major().ok_or_else(|| {
                     ReedError::Operator(
-                        "linear_assemble_add_ceed_matrix: dense assembly slot is not numeric-ready".into(),
+                        "linear_assemble_add_ceed_matrix: dense assembly slot is not numeric-ready"
+                            .into(),
                     )
                 })?;
                 if *nrows != n || *ncols != n || values.len() != a.len() {
@@ -1001,7 +1017,8 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
         match field.vector {
             FieldVector::Active => {
                 let local = if let Some(basis) = field.basis {
-                    local_buffer.resize(self.num_elem * basis.num_dof() * basis.num_comp(), T::ZERO);
+                    local_buffer
+                        .resize(self.num_elem * basis.num_dof() * basis.num_comp(), T::ZERO);
                     if matches!(eval_mode, EvalMode::Weight) && basis.num_comp() != 1 {
                         return Err(ReedError::Operator(format!(
                             "operator adjoint: field '{}' EvalMode::Weight push requires basis.num_comp() == 1",
@@ -1204,9 +1221,13 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
             }
         }
 
-        let mut q_out_cot: Vec<Vec<T>> = (0..self.num_qfunction_outputs).map(|_| Vec::new()).collect();
-        let mut q_in_cot: Vec<Vec<T>> = (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
-        let mut q_passive_fwd: Vec<Vec<T>> = (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
+        let mut q_out_cot: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
+            .map(|_| Vec::new())
+            .collect();
+        let mut q_in_cot: Vec<Vec<T>> =
+            (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
+        let mut q_passive_fwd: Vec<Vec<T>> =
+            (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
         let mut input_locals: Vec<Vec<T>> =
             (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
         let mut output_locals: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
@@ -1483,11 +1504,7 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
             ));
         }
         let mut sink = ActiveOutputSink::Single(domain_cotangent);
-        self.execute_adjoint_inner(
-            ActiveInputSource::Single(range_cotangent),
-            &mut sink,
-            add,
-        )
+        self.execute_adjoint_inner(ActiveInputSource::Single(range_cotangent), &mut sink, add)
     }
 
     fn execute_adjoint_field_buffers_impl<'io>(
@@ -1533,21 +1550,18 @@ impl<'a, T: Scalar> OperatorTrait<T> for CpuOperator<'a, T> {
         self.check_ready()?;
         let n = self.active_global_dof_len()?;
         let slot = DenseLinearAssemblySlot::new_symbolic(n)?;
-        *self
-            .dense_linear_assembly
-            .lock()
-            .map_err(|_| ReedError::Operator("linear_assemble_symbolic: assembly mutex poisoned".into()))? =
-            Some(slot);
+        *self.dense_linear_assembly.lock().map_err(|_| {
+            ReedError::Operator("linear_assemble_symbolic: assembly mutex poisoned".into())
+        })? = Some(slot);
         Ok(())
     }
 
     fn linear_assemble(&self) -> ReedResult<()> {
         let n = self.active_global_dof_len()?;
         {
-            let g = self
-                .dense_linear_assembly
-                .lock()
-                .map_err(|_| ReedError::Operator("linear_assemble: assembly mutex poisoned".into()))?;
+            let g = self.dense_linear_assembly.lock().map_err(|_| {
+                ReedError::Operator("linear_assemble: assembly mutex poisoned".into())
+            })?;
             let slot = g.as_ref().ok_or_else(|| {
                 ReedError::Operator("linear_assemble: call linear_assemble_symbolic first".into())
             })?;
@@ -1569,12 +1583,13 @@ impl<'a, T: Scalar> OperatorTrait<T> for CpuOperator<'a, T> {
             let x = crate::vector::CpuVector::from_vec(input);
             let mut y = crate::vector::CpuVector::new(n);
             self.apply(&x, &mut y)?;
-            let mut g = self
-                .dense_linear_assembly
-                .lock()
-                .map_err(|_| ReedError::Operator("linear_assemble: assembly mutex poisoned".into()))?;
+            let mut g = self.dense_linear_assembly.lock().map_err(|_| {
+                ReedError::Operator("linear_assemble: assembly mutex poisoned".into())
+            })?;
             let slot = g.as_mut().ok_or_else(|| {
-                ReedError::Operator("linear_assemble: assembly buffer disappeared during fill".into())
+                ReedError::Operator(
+                    "linear_assemble: assembly buffer disappeared during fill".into(),
+                )
             })?;
             for i in 0..n {
                 slot.a[i + j * n] = y.as_slice()[i];
@@ -1594,12 +1609,13 @@ impl<'a, T: Scalar> OperatorTrait<T> for CpuOperator<'a, T> {
     fn linear_assemble_add(&self) -> ReedResult<()> {
         let n = self.active_global_dof_len()?;
         {
-            let g = self
-                .dense_linear_assembly
-                .lock()
-                .map_err(|_| ReedError::Operator("linear_assemble_add: assembly mutex poisoned".into()))?;
+            let g = self.dense_linear_assembly.lock().map_err(|_| {
+                ReedError::Operator("linear_assemble_add: assembly mutex poisoned".into())
+            })?;
             let slot = g.as_ref().ok_or_else(|| {
-                ReedError::Operator("linear_assemble_add: call linear_assemble_symbolic first".into())
+                ReedError::Operator(
+                    "linear_assemble_add: call linear_assemble_symbolic first".into(),
+                )
             })?;
             if !slot.symbolic_done {
                 return Err(ReedError::Operator(
@@ -1619,23 +1635,25 @@ impl<'a, T: Scalar> OperatorTrait<T> for CpuOperator<'a, T> {
             let x = crate::vector::CpuVector::from_vec(input);
             let mut y = crate::vector::CpuVector::new(n);
             self.apply(&x, &mut y)?;
-            let mut g = self
-                .dense_linear_assembly
-                .lock()
-                .map_err(|_| ReedError::Operator("linear_assemble_add: assembly mutex poisoned".into()))?;
+            let mut g = self.dense_linear_assembly.lock().map_err(|_| {
+                ReedError::Operator("linear_assemble_add: assembly mutex poisoned".into())
+            })?;
             let slot = g.as_mut().ok_or_else(|| {
-                ReedError::Operator("linear_assemble_add: assembly buffer disappeared during fill".into())
+                ReedError::Operator(
+                    "linear_assemble_add: assembly buffer disappeared during fill".into(),
+                )
             })?;
             for i in 0..n {
                 slot.a[i + j * n] += y.as_slice()[i];
             }
         }
-        let mut g = self
-            .dense_linear_assembly
-            .lock()
-            .map_err(|_| ReedError::Operator("linear_assemble_add: assembly mutex poisoned".into()))?;
+        let mut g = self.dense_linear_assembly.lock().map_err(|_| {
+            ReedError::Operator("linear_assemble_add: assembly mutex poisoned".into())
+        })?;
         let slot = g.as_mut().ok_or_else(|| {
-            ReedError::Operator("linear_assemble_add: assembly buffer disappeared after fill".into())
+            ReedError::Operator(
+                "linear_assemble_add: assembly buffer disappeared after fill".into(),
+            )
         })?;
         slot.numeric_done = true;
         Ok(())
@@ -1683,10 +1701,14 @@ impl<'a, T: Scalar> OperatorTrait<T> for CpuOperator<'a, T> {
             let x = crate::vector::CpuVector::from_vec(input);
             let mut y = crate::vector::CpuVector::new(n);
             self.apply(&x, &mut y)?;
-            for i in 0..n { a_vec[i + j * n] = y.as_slice()[i]; }
+            for i in 0..n {
+                a_vec[i + j * n] = y.as_slice()[i];
+            }
         }
         let inv = crate::fdm_inverse::invert_dense_col_major(&a_vec, n)?;
-        Ok(Box::new(crate::fdm_inverse::CpuFdmDenseInverseOperator::new(n, inv)))
+        Ok(Box::new(
+            crate::fdm_inverse::CpuFdmDenseInverseOperator::new(n, inv),
+        ))
     }
 
     fn operator_create_fdm_element_inverse_jacobi(&self) -> ReedResult<Box<dyn OperatorTrait<T>>> {
@@ -1973,7 +1995,9 @@ mod adjoint_field_buffer_tests {
             let aux = inputs[1];
             let v = &mut outputs[0];
             if u.len() != q || aux.len() != q || v.len() != q {
-                return Err(ReedError::QFunction("SumTwoInterpQf: length mismatch".into()));
+                return Err(ReedError::QFunction(
+                    "SumTwoInterpQf: length mismatch".into(),
+                ));
             }
             for i in 0..q {
                 v[i] = u[i] + aux[i];
@@ -1994,7 +2018,8 @@ mod adjoint_field_buffer_tests {
         ) -> ReedResult<()> {
             if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
                 return Err(ReedError::QFunction(
-                    "SumTwoInterpQf transpose: expected 1 output cotangent and 2 input buffers".into(),
+                    "SumTwoInterpQf transpose: expected 1 output cotangent and 2 input buffers"
+                        .into(),
                 ));
             }
             let dv = output_cotangents[0];
@@ -2091,7 +2116,7 @@ mod adjoint_field_buffer_tests {
 
         let op = OperatorBuilder::new()
             .qfunction(
-                Box::new(MassApplyInterpTimesWeight::default()) as Box<dyn QFunctionTrait<f64>>,
+                Box::new(MassApplyInterpTimesWeight::default()) as Box<dyn QFunctionTrait<f64>>
             )
             .field("u", Some(&r), Some(&b), FieldVector::Active)
             .field("w", None, Some(&b), FieldVector::Passive(&passive_dummy))
@@ -2107,12 +2132,7 @@ mod adjoint_field_buffer_tests {
 
         let mut du = CpuVector::new(ndofs);
         du.set_value(0.0)?;
-        OperatorTrait::apply_with_transpose(
-            &op,
-            OperatorTransposeRequest::Adjoint,
-            &w,
-            &mut du,
-        )?;
+        OperatorTrait::apply_with_transpose(&op, OperatorTransposeRequest::Adjoint, &w, &mut du)?;
 
         let lhs = dot_f64(mu.as_slice(), w.as_slice());
         let rhs = dot_f64(u.as_slice(), du.as_slice());
@@ -2239,8 +2259,13 @@ mod clear_dense_linear_assembly_tests {
         let ndofs = 2usize;
         let ind = vec![0i32, 1];
         let r = CpuElemRestriction::<f64>::new_offset(nelem, p, 1, 1, ndofs, &ind)?;
-        let r_q =
-            CpuElemRestriction::<f64>::new_strided(nelem, q, 1, nelem * q, [1, q as i32, q as i32])?;
+        let r_q = CpuElemRestriction::<f64>::new_strided(
+            nelem,
+            q,
+            1,
+            nelem * q,
+            [1, q as i32, q as i32],
+        )?;
         let b = LagrangeBasis::new(1, 1, p, q, QuadMode::Gauss)?;
         let mut qdata = CpuVector::new(nelem * q);
         qdata.set_value(1.0)?;

@@ -397,18 +397,20 @@ impl GpuRuntime {
             label: Some("reed-restriction-scatter"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(RESTRICTION_SCATTER_WGSL)),
         });
-        let shader_restriction_f64_offset = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("reed-restriction-f64-offset"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
-                RESTRICTION_OFFSET_GATHER_F64_BITS_WGSL,
-            )),
-        });
-        let shader_restriction_f64_strided = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("reed-restriction-f64-strided"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
-                RESTRICTION_STRIDED_GATHER_F64_BITS_WGSL,
-            )),
-        });
+        let shader_restriction_f64_offset =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("reed-restriction-f64-offset"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
+                    RESTRICTION_OFFSET_GATHER_F64_BITS_WGSL,
+                )),
+            });
+        let shader_restriction_f64_strided =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("reed-restriction-f64-strided"),
+                source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
+                    RESTRICTION_STRIDED_GATHER_F64_BITS_WGSL,
+                )),
+            });
         let set_pipeline =
             create_pipeline_with_module(&device, &set_layout, &shader_main, "set_main");
         let scale_pipeline =
@@ -641,9 +643,7 @@ impl GpuRuntime {
         );
         let shader_qf_mass_build = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("reed-qf-mass-build-f32"),
-            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
-                QFUNCTION_MASS_BUILD_WGSL,
-            )),
+            source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(QFUNCTION_MASS_BUILD_WGSL)),
         });
         let qfunction_mass1d_build_pipeline = create_pipeline_with_module(
             &device,
@@ -796,41 +796,42 @@ impl GpuRuntime {
             "vector3_poisson3d_transpose_accumulate_f32",
         );
 
-        let qfunction_unary_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("reed-qf-unary-f32"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let qfunction_unary_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("reed-qf-unary-f32"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: false },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                ],
+            });
         let shader_qf_identity = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("reed-qf-identity-copy-f32"),
             source: wgpu::ShaderSource::Wgsl(std::borrow::Cow::Borrowed(
@@ -1208,7 +1209,9 @@ impl GpuRuntime {
         &self.qfunction_identity_scalar_gather_pipeline
     }
 
-    pub fn qfunction_identity_scalar_transpose_accumulate_pipeline(&self) -> &wgpu::ComputePipeline {
+    pub fn qfunction_identity_scalar_transpose_accumulate_pipeline(
+        &self,
+    ) -> &wgpu::ComputePipeline {
         &self.qfunction_identity_scalar_transpose_accumulate_pipeline
     }
 
@@ -1239,14 +1242,7 @@ impl GpuRuntime {
         v: &wgpu::Buffer,
         n: u32,
     ) -> ReedResult<()> {
-        Self::dispatch_mass_apply_qp_inner(
-            self,
-            &self.mass_apply_qp_pipeline,
-            u,
-            qdata,
-            v,
-            n,
-        )
+        Self::dispatch_mass_apply_qp_inner(self, &self.mass_apply_qp_pipeline, u, qdata, v, n)
     }
 
     /// Dispatch **MassApply** transpose cotangent at quadrature:
@@ -1293,11 +1289,13 @@ impl GpuRuntime {
             }
         }
         let p = MassApplyQpParamsGpu { n, _pad: [0; 3] };
-        let p_buffer = rt.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("reed-mass-apply-qp-params"),
-            contents: bytemuck::bytes_of(&p),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
+        let p_buffer = rt
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("reed-mass-apply-qp-params"),
+                contents: bytemuck::bytes_of(&p),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
         let bind = rt.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("reed-mass-apply-qp-bind"),
             layout: &rt.mass_apply_qp_layout,
@@ -1381,8 +1379,7 @@ impl GpuRuntime {
                 | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        self.queue
-            .write_buffer(&u_buf, 0, bytemuck::cast_slice(u));
+        self.queue.write_buffer(&u_buf, 0, bytemuck::cast_slice(u));
         self.queue
             .write_buffer(&q_buf, 0, bytemuck::cast_slice(qdata));
         self.dispatch_mass_apply_qp_f32(&u_buf, &q_buf, &v_buf, n32)?;
@@ -2689,7 +2686,6 @@ fn basis_weight_tile_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 "#;
 
-
 /// Transpose (scatter): `v[g] += u[l]` for offset layout. Single-thread loop (workgroup size 1) so
 /// we avoid `atomicCompareExchange` (not available on all Metal targets) while matching CPU `+=`.
 const RESTRICTION_SCATTER_WGSL: &str = r#"
@@ -2870,7 +2866,8 @@ mod qfunction_context_sync_tests {
             mapped_at_creation: false,
         });
 
-        rt.sync_qfunction_context_to_buffer(&gpu_buf, 0, &ctx).unwrap();
+        rt.sync_qfunction_context_to_buffer(&gpu_buf, 0, &ctx)
+            .unwrap();
         assert!(!ctx.host_needs_device_upload());
 
         let readback = rt.device.create_buffer(&wgpu::BufferDescriptor {
@@ -2901,7 +2898,8 @@ mod qfunction_context_sync_tests {
         readback.unmap();
         assert!((got - std::f64::consts::PI).abs() < 1e-14);
 
-        rt.sync_qfunction_context_to_buffer(&gpu_buf, 0, &ctx).unwrap();
+        rt.sync_qfunction_context_to_buffer(&gpu_buf, 0, &ctx)
+            .unwrap();
     }
 
     #[test]
@@ -2918,7 +2916,8 @@ mod qfunction_context_sync_tests {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             mapped_at_creation: false,
         });
-        rt.sync_qfunction_context_to_buffer(&gpu_buf, 0, &ctx).unwrap();
+        rt.sync_qfunction_context_to_buffer(&gpu_buf, 0, &ctx)
+            .unwrap();
         assert!(!ctx.host_needs_device_upload());
 
         ctx.write_i32_le(0, 0x11223344).unwrap();
@@ -2926,7 +2925,8 @@ mod qfunction_context_sync_tests {
         ctx.mark_host_synced_to_device();
         assert!(!ctx.host_needs_device_upload());
 
-        rt.write_qfunction_context_to_buffer(&gpu_buf, 0, &ctx).unwrap();
+        rt.write_qfunction_context_to_buffer(&gpu_buf, 0, &ctx)
+            .unwrap();
         assert!(!ctx.host_needs_device_upload());
     }
 }
@@ -2956,23 +2956,30 @@ mod mass_apply_qp_tests {
         let q_host: Vec<f32> = (0..n).map(|i| 1.0 + (i as f32) * 0.03).collect();
         let byte_len = (n as usize) * 4;
 
-        let u_buf = rt.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("reed-test-ma-u"),
-            contents: bytemuck::cast_slice(&u_host),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-        let q_buf = rt.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("reed-test-ma-q"),
-            contents: bytemuck::cast_slice(&q_host),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let u_buf = rt
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("reed-test-ma-u"),
+                contents: bytemuck::cast_slice(&u_host),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        let q_buf = rt
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("reed-test-ma-q"),
+                contents: bytemuck::cast_slice(&q_host),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
         let v_buf = rt.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reed-test-ma-v"),
             size: byte_len as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        rt.dispatch_mass_apply_qp_f32(&u_buf, &q_buf, &v_buf, n).unwrap();
+        rt.dispatch_mass_apply_qp_f32(&u_buf, &q_buf, &v_buf, n)
+            .unwrap();
 
         let readback = rt.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("reed-test-ma-readback"),
@@ -3012,22 +3019,30 @@ mod mass_apply_qp_tests {
         let q_host: Vec<f32> = (0..n).map(|i| 2.0 - (i as f32) * 0.02).collect();
         let byte_len = (n as usize) * 4;
 
-        let dv_buf = rt.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("reed-test-mat-dv"),
-            contents: bytemuck::cast_slice(&dv_host),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
-        let q_buf = rt.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("reed-test-mat-q"),
-            contents: bytemuck::cast_slice(&q_host),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-        });
+        let dv_buf = rt
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("reed-test-mat-dv"),
+                contents: bytemuck::cast_slice(&dv_host),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
+        let q_buf = rt
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("reed-test-mat-q"),
+                contents: bytemuck::cast_slice(&q_host),
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            });
         let du_seed: Vec<f32> = (0..n).map(|i| (i as f32) * 0.25).collect();
-        let du_buf = rt.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("reed-test-mat-du"),
-            contents: bytemuck::cast_slice(&du_seed),
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        });
+        let du_buf = rt
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("reed-test-mat-du"),
+                contents: bytemuck::cast_slice(&du_seed),
+                usage: wgpu::BufferUsages::STORAGE
+                    | wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC,
+            });
 
         rt.dispatch_mass_apply_qp_transpose_accumulate_f32(&dv_buf, &q_buf, &du_buf, n)
             .unwrap();
@@ -3106,9 +3121,7 @@ mod mass_apply_qp_tests {
         let dv: Vec<f32> = (0..num_qp * components)
             .map(|i| (i as f32) * 0.04 - 0.3)
             .collect();
-        let qdata: Vec<f32> = (0..num_qp)
-            .map(|i| 0.65 + (i as f32) * 0.015)
-            .collect();
+        let qdata: Vec<f32> = (0..num_qp).map(|i| 0.65 + (i as f32) * 0.015).collect();
         let du_seed: Vec<f32> = (0..num_qp * components)
             .map(|i| (i as f32) * 0.09)
             .collect();
@@ -3126,12 +3139,7 @@ mod mass_apply_qp_tests {
         let mut q_mut = qdata.clone();
         let gallery = reed_cpu::Vector2MassApply::new();
         gallery
-            .apply_operator_transpose(
-                &[],
-                num_qp,
-                &[&dv],
-                &mut [&mut du_cpu[..], &mut q_mut[..]],
-            )
+            .apply_operator_transpose(&[], num_qp, &[&dv], &mut [&mut du_cpu[..], &mut q_mut[..]])
             .unwrap();
 
         for i in 0..du_gpu.len() {

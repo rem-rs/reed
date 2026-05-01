@@ -9,9 +9,7 @@ pub use ceed_gallery::{
     Vector2Poisson2DApply, Vector3MassApply, Vector3Poisson1DApply, Vector3Poisson2DApply,
     Vector3Poisson3DApply,
 };
-pub use mass::{
-    Mass1DBuild, Mass2DBuild, Mass3DBuild, MassApply, MassApplyInterpTimesWeight,
-};
+pub use mass::{Mass1DBuild, Mass2DBuild, Mass3DBuild, MassApply, MassApplyInterpTimesWeight};
 pub use poisson::{
     Poisson1DApply, Poisson1DBuild, Poisson2DApply, Poisson2DBuild, Poisson3DApply, Poisson3DBuild,
 };

@@ -558,7 +558,8 @@ impl<T: Scalar> QFunctionTrait<T> for Vector2Poisson1DApply {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
             return Err(ReedError::QFunction(
-                "Vector2Poisson1DApply transpose expects 1 output cotangent and 2 input buffers".into(),
+                "Vector2Poisson1DApply transpose expects 1 output cotangent and 2 input buffers"
+                    .into(),
             ));
         }
         let ddv = output_cotangents[0];
@@ -679,7 +680,8 @@ impl<T: Scalar> QFunctionTrait<T> for Vector2Poisson2DApply {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
             return Err(ReedError::QFunction(
-                "Vector2Poisson2DApply transpose expects 1 output cotangent and 2 input buffers".into(),
+                "Vector2Poisson2DApply transpose expects 1 output cotangent and 2 input buffers"
+                    .into(),
             ));
         }
         let ddv = output_cotangents[0];
@@ -906,7 +908,8 @@ impl<T: Scalar> QFunctionTrait<T> for Vector3Poisson1DApply {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
             return Err(ReedError::QFunction(
-                "Vector3Poisson1DApply transpose expects 1 output cotangent and 2 input buffers".into(),
+                "Vector3Poisson1DApply transpose expects 1 output cotangent and 2 input buffers"
+                    .into(),
             ));
         }
         let ddv = output_cotangents[0];
@@ -1031,7 +1034,8 @@ impl<T: Scalar> QFunctionTrait<T> for Vector3Poisson2DApply {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
             return Err(ReedError::QFunction(
-                "Vector3Poisson2DApply transpose expects 1 output cotangent and 2 input buffers".into(),
+                "Vector3Poisson2DApply transpose expects 1 output cotangent and 2 input buffers"
+                    .into(),
             ));
         }
         let ddv = output_cotangents[0];
@@ -1161,7 +1165,8 @@ impl<T: Scalar> QFunctionTrait<T> for Vector3Poisson3DApply {
     ) -> ReedResult<()> {
         if output_cotangents.len() != 1 || input_cotangents.len() != 2 {
             return Err(ReedError::QFunction(
-                "Vector3Poisson3DApply transpose expects 1 output cotangent and 2 input buffers".into(),
+                "Vector3Poisson3DApply transpose expects 1 output cotangent and 2 input buffers"
+                    .into(),
             ));
         }
         let ddv = output_cotangents[0];
