@@ -461,6 +461,10 @@ impl<T: Scalar> ElemRestrictionTrait<T> for CpuElemRestriction<T> {
             )),
         }
     }
+
+    fn boxed_clone(&self) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        Ok(Box::new(self.clone()))
+    }
 }
 
 #[cfg(test)]
