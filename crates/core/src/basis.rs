@@ -38,6 +38,13 @@ pub trait BasisTrait<T: Scalar>: Send + Sync {
 
     /// Quadrature point coordinates (reference element, row-major [nqpts x dim]).
     fn q_ref(&self) -> &[T];
+
+    /// Tensor-product FDM: if this basis supports fast diagonalization, return
+    /// `(interp_1d, grad_1d, weights_1d, p, q)` where each slice is 1D data.
+    /// Default `None`.
+    fn tensor_fdm_1d_data(&self) -> Option<(&[T], &[T], &[T], usize, usize)> {
+        None
+    }
 }
 
 /// WASM variant without Send+Sync bounds.
@@ -57,4 +64,11 @@ pub trait BasisTrait<T: Scalar> {
     ) -> ReedResult<()>;
     fn q_weights(&self) -> &[T];
     fn q_ref(&self) -> &[T];
+
+    /// Tensor-product FDM: if this basis supports fast diagonalization, return
+    /// `(interp_1d, grad_1d, weights_1d, p, q)` where each slice is 1D data.
+    /// Default `None`.
+    fn tensor_fdm_1d_data(&self) -> Option<(&[T], &[T], &[T], usize, usize)> {
+        None
+    }
 }
