@@ -289,6 +289,26 @@ impl<T: Scalar> Reed<T> {
         self.inner.basis_h1_simplex(topo, poly, ncomp, q)
     }
 
+    pub fn basis_hcurl_nedelec(
+        &self,
+        topo: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        self.inner.basis_hcurl_nedelec(topo, p, q, qmode)
+    }
+
+    pub fn basis_hdiv_raviart_thomas(
+        &self,
+        topo: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
+    ) -> ReedResult<Box<dyn BasisTrait<T>>> {
+        self.inner.basis_hdiv_raviart_thomas(topo, p, q, qmode)
+    }
+
     pub fn operator_builder<'a>(&'a self) -> OperatorBuilder<'a, T> {
         OperatorBuilder::new()
     }

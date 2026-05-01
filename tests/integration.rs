@@ -4771,3 +4771,112 @@ fn test_tensor_fdm_apply_add() {
         );
     }
 }
+
+#[test]
+fn test_nedelec_tri_p1_construction() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let basis = reed.basis_hcurl_nedelec(ElemTopology::Triangle, 1, 3, QuadMode::Gauss).unwrap();
+    assert_eq!(basis.dim(), 2);
+    assert_eq!(basis.num_dof(), 3);
+    assert_eq!(basis.num_comp(), 2);
+    assert_eq!(basis.num_qpoints(), 3);
+}
+
+#[test]
+fn test_nedelec_tri_p1_interp_shape() {
+    // Verify interp produces correct shape at quadrature points
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let basis = reed.basis_hcurl_nedelec(ElemTopology::Triangle, 1, 3, QuadMode::Gauss).unwrap();
+    // Evaluate interp for a single element with unit DOF values
+    let ndof = basis.num_dof();
+    let ncomp = basis.num_comp(); // = dim = 2
+    let nqpts = basis.num_qpoints();
+    let mut u = vec![0.0f64; ndof * ncomp];
+    let mut v = vec![0.0f64; nqpts * ncomp];
+    // Set each DOF to 1.0 in turn and verify vector output
+    for dof in 0..ndof {
+        u.fill(0.0);
+        u[dof * ncomp] = 1.0; // scalar DOF value in first component
+        v.fill(0.0);
+        basis.apply(1, false, EvalMode::Interp, &u, &mut v).unwrap();
+        // Verify at least one non-zero output (basis functions are non-zero somewhere)
+        let has_nonzero = v.iter().any(|&x| x.abs() > 1e-12);
+        assert!(has_nonzero, "dof {} produced zero output", dof);
+    }
+}
+
+#[test]
+fn test_nedelec_tri_p1_curl_constant_per_element() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let basis = reed.basis_hcurl_nedelec(ElemTopology::Triangle, 1, 4, QuadMode::Gauss).unwrap();
+    let ndof = basis.num_dof();
+    let ncomp = basis.num_comp();
+    let nqpts = basis.num_qpoints();
+    let mut u = vec![0.0f64; ndof * ncomp];
+    let mut v = vec![0.0f64; nqpts]; // scalar curl in 2D
+    // Set all DOFs to 1.0, curl should be constant across qpts
+    for dof in 0..ndof { u[dof * ncomp] = 1.0; }
+    basis.apply(1, false, EvalMode::HCurl, &u, &mut v).unwrap();
+    // All curl values should be equal (Nedelec P1 curl is constant)
+    let v0 = v[0];
+    for qi in 1..nqpts {
+        assert!((v[qi] - v0).abs() < 1e-12, "curl varies at qpt {}", qi);
+    }
+}
+
+#[test]
+fn test_rt_tri_rt0_construction() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let basis = reed.basis_hdiv_raviart_thomas(ElemTopology::Triangle, 0, 3, QuadMode::Gauss).unwrap();
+    assert_eq!(basis.dim(), 2);
+    assert_eq!(basis.num_dof(), 3);
+    assert_eq!(basis.num_comp(), 2);
+    assert_eq!(basis.num_qpoints(), 3);
+}
+
+#[test]
+fn test_rt_tri_rt0_constant_divergence() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let basis = reed.basis_hdiv_raviart_thomas(ElemTopology::Triangle, 0, 4, QuadMode::Gauss).unwrap();
+    let ndof = basis.num_dof();
+    let ncomp = basis.num_comp();
+    let nqpts = basis.num_qpoints();
+    let mut u = vec![0.0f64; ndof * ncomp];
+    let mut v = vec![0.0f64; nqpts]; // scalar divergence
+    for dof in 0..ndof { u[dof * ncomp] = 1.0; }
+    basis.apply(1, false, EvalMode::HDiv, &u, &mut v).unwrap();
+    // Divergence should be non-zero and constant (RT0 property)
+    let v0 = v[0];
+    assert!(v0.abs() > 0.0, "divergence should be non-zero");
+    for qi in 1..nqpts {
+        assert!((v[qi] - v0).abs() < 1e-12, "divergence varies at qpt {}", qi);
+    }
+}
+
+#[test]
+fn test_hcurl_hdiv_factory_rejects_unsupported() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    // Unsupported p
+    assert!(reed.basis_hcurl_nedelec(ElemTopology::Triangle, 2, 3, QuadMode::Gauss).is_err());
+    assert!(reed.basis_hdiv_raviart_thomas(ElemTopology::Triangle, 1, 3, QuadMode::Gauss).is_err());
+    // Unsupported topology
+    assert!(reed.basis_hcurl_nedelec(ElemTopology::Quad, 1, 3, QuadMode::Gauss).is_err());
+}
+
+#[test]
+fn test_nedelec_tet_p1_construction() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let basis = reed.basis_hcurl_nedelec(ElemTopology::Tet, 1, 4, QuadMode::Gauss).unwrap();
+    assert_eq!(basis.dim(), 3);
+    assert_eq!(basis.num_dof(), 6);
+    assert_eq!(basis.num_comp(), 3);
+}
+
+#[test]
+fn test_rt_tet_rt0_construction() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let basis = reed.basis_hdiv_raviart_thomas(ElemTopology::Tet, 0, 4, QuadMode::Gauss).unwrap();
+    assert_eq!(basis.dim(), 3);
+    assert_eq!(basis.num_dof(), 4);
+    assert_eq!(basis.num_comp(), 3);
+}
