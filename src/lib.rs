@@ -24,9 +24,9 @@ pub use reed_core::{
 };
 pub use reed_cpu::{
     q_function_by_name, CompositeOperator, CompositeOperatorBorrowed, CpuBackend,
-    CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, CpuOperator, FDM_DENSE_MAX_N,
-    FieldVector, OperatorBuilder, QFUNCTION_INTERIOR_GALLERY_NAMES,
-    QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES,
+    CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, CpuFdmTensorInverseOperator,
+    CpuOperator, FdmOperatorKind, FDM_DENSE_MAX_N, FieldVector, OperatorBuilder,
+    QFUNCTION_INTERIOR_GALLERY_NAMES, QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES,
 };
 #[cfg(feature = "wgpu-backend")]
 pub use reed_wgpu::{GpuRuntime, WgpuBackend};
