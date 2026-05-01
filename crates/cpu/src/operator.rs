@@ -905,9 +905,19 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
                     ))),
                 }
             }
-            EvalMode::HCurl | EvalMode::HDiv => Err(ReedError::Basis(
-                "HCurl/HDiv not supported on this basis type".into(),
-            )),
+            EvalMode::HCurl => {
+                let basis = field.basis.ok_or_else(|| {
+                    ReedError::Operator(format!("field '{}' requires basis for HCurl", field.name))
+                })?;
+                match basis.dim() {
+                    2 => Ok(1),
+                    3 => Ok(3),
+                    d => Err(ReedError::Operator(format!(
+                        "field '{}': HCurl requires dim=2 or 3, got {}", field.name, d
+                    ))),
+                }
+            }
+            EvalMode::HDiv => Ok(1),
         }
     }
 
