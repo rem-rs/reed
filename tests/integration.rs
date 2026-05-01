@@ -1,6 +1,6 @@
 use reed::{
-    CeedMatrix, CeedMatrixStorage, CompositeOperator, CpuOperator, CsrMatrix, ElemRestrictionTrait,
-    ElemTopology, EvalMode, FieldVector, OperatorAssembleKind, OperatorTrait,
+    CeedInt, CeedMatrix, CeedMatrixStorage, CompositeOperator, CpuOperator, CsrMatrix,
+    ElemRestrictionTrait, ElemTopology, EvalMode, FieldVector, OperatorAssembleKind, OperatorTrait,
     OperatorTransposeRequest, QFunctionCategory, QFunctionContext, QFunctionField,
     QuadMode, QFUNCTION_INTERIOR_GALLERY_NAMES, QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES, Reed,
     ReedError, ReedResult, TransposeMode, VectorTrait,
@@ -4507,5 +4507,247 @@ fn test_wgpu_basis_weight_transpose_matches_cpu() {
 
     for (a, b) in v_cpu.iter().zip(v_gpu.iter()) {
         assert!((a - b).abs() < 1.0e-5);
+    }
+}
+
+#[test]
+fn test_tensor_fdm_mass_1d_large_n() {
+    // 1D mass operator with many elements (n > 256) triggers tensor FDM path.
+    // Verify M * FDM_inv(e_j) ≈ e_j for a few basis vectors.
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let p: usize = 4;
+    let q: usize = 5;
+    let nelem: usize = 100;
+    let ndof = p;
+    let ng = nelem * ndof; // 400 > 256 → tensor FDM path
+
+    let basis = reed
+        .basis_tensor_h1_lagrange(1, 1, p, q, QuadMode::GaussLobatto)
+        .unwrap();
+    let offsets: Vec<CeedInt> = (0..ng as CeedInt).collect();
+    let restr = reed
+        .elem_restriction(nelem, ndof, 1, 1, ng, &offsets)
+        .unwrap();
+    let r_q = reed
+        .strided_elem_restriction(nelem, q, 1, nelem * q, [1, q as i32, q as i32])
+        .unwrap();
+    // GLL q=5 quadrature weights on [-1,1]
+    let gll_w5: [f64; 5] = [0.1, 49.0 / 90.0, 32.0 / 45.0, 49.0 / 90.0, 0.1];
+    let mut qdata = reed.vector(nelem * q).unwrap();
+    for e in 0..nelem {
+        let base = e * q;
+        for qi in 0..q {
+            qdata.as_mut_slice()[base + qi] = gll_w5[qi];
+        }
+    }
+    let qf = reed.q_function_by_name("MassApply").unwrap();
+
+    let op: CpuOperator<'_, f64> = reed
+        .operator_builder()
+        .qfunction(qf)
+        .field("u", Some(&*restr), Some(&*basis), FieldVector::Active)
+        .field("qdata", Some(&*r_q), None, FieldVector::Passive(&*qdata))
+        .field("v", Some(&*restr), Some(&*basis), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    // Tensor FDM path works for any n; operator_supports_assemble only
+    // checks dense-fallback limit (n ≤ 256). Creation succeeds via tensor path.
+    let fdm_inv = OperatorTrait::operator_create_fdm_element_inverse(&op).unwrap();
+
+    // Verify M * FDM_inv(e_j) ≈ e_j for j=0, middle, end
+    for &j in &[0, ng / 2, ng - 1] {
+        let mut ej = reed.vector(ng).unwrap();
+        let mut fdm_ej = reed.vector(ng).unwrap();
+        let mut m_fdm_ej = reed.vector(ng).unwrap();
+
+        ej.set_value(0.0).unwrap();
+        ej.as_mut_slice()[j] = 1.0;
+        OperatorTrait::apply(fdm_inv.as_ref(), &*ej, &mut *fdm_ej).unwrap();
+        OperatorTrait::apply(&op, &*fdm_ej, &mut *m_fdm_ej).unwrap();
+
+        let err = (m_fdm_ej.as_slice()[j] - 1.0).abs();
+        assert!(
+            err < 0.2,
+            "M * FDM_inv(e_{j})[{j}] = {}, expected ≈ 1.0, err={err}",
+            m_fdm_ej.as_slice()[j]
+        );
+    }
+}
+
+#[test]
+fn test_tensor_fdm_mass_2d_large_n() {
+    // 2D mass operator with n > 256 triggers tensor FDM path in 2D.
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let p: usize = 4;
+    let q: usize = 5;
+    let dim: usize = 2;
+    let nelem: usize = 50;
+    let ndof = p * p;
+    let ng = nelem * ndof; // 800 > 256
+
+    let basis = reed
+        .basis_tensor_h1_lagrange(dim, 1, p, q, QuadMode::GaussLobatto)
+        .unwrap();
+    let offsets: Vec<CeedInt> = (0..ng as CeedInt).collect();
+    let restr = reed
+        .elem_restriction(nelem, ndof, 1, 1, ng, &offsets)
+        .unwrap();
+    let qpts_per_elem = q.pow(dim as u32);
+    let r_q = reed
+        .strided_elem_restriction(
+            nelem,
+            qpts_per_elem,
+            1,
+            nelem * qpts_per_elem,
+            [1, qpts_per_elem as i32, qpts_per_elem as i32],
+        )
+        .unwrap();
+    // GLL q=5 1D weights; 2D weights are tensor products w_i * w_j
+    let gll_w5: [f64; 5] = [0.1, 49.0 / 90.0, 32.0 / 45.0, 49.0 / 90.0, 0.1];
+    let mut qdata = reed.vector(nelem * qpts_per_elem).unwrap();
+    for e in 0..nelem {
+        let base = e * qpts_per_elem;
+        for qi in 0..q {
+            for qj in 0..q {
+                qdata.as_mut_slice()[base + qi * q + qj] = gll_w5[qi] * gll_w5[qj];
+            }
+        }
+    }
+    let qf = reed.q_function_by_name("MassApply").unwrap();
+
+    let op: CpuOperator<'_, f64> = reed
+        .operator_builder()
+        .qfunction(qf)
+        .field("u", Some(&*restr), Some(&*basis), FieldVector::Active)
+        .field("qdata", Some(&*r_q), None, FieldVector::Passive(&*qdata))
+        .field("v", Some(&*restr), Some(&*basis), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    // n > 256: operator_supports_assemble returns false (dense-fallback limit),
+    // but tensor FDM creation succeeds.
+    let fdm_inv = OperatorTrait::operator_create_fdm_element_inverse(&op).unwrap();
+
+    // Apply to a non-zero vector — should not panic and produce non-zero output
+    let mut x = reed.vector(ng).unwrap();
+    let mut y = reed.vector(ng).unwrap();
+    x.set_value(1.0).unwrap();
+    OperatorTrait::apply(fdm_inv.as_ref(), &*x, &mut *y).unwrap();
+    assert!(
+        y.as_slice().iter().any(|&v| v.abs() > 0.0),
+        "FDM inverse of 2D mass should produce non-zero output"
+    );
+}
+
+#[test]
+fn test_tensor_fdm_non_tensor_basis_falls_back_to_dense() {
+    // SimplexBasis does NOT support tensor FDM.
+    // With n ≤ 256, the dense inverse fallback should work.
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    // Use simplex basis with 1 component: poly=1 → 2 nodes/component.
+    // ncomp=1 gives ndof=2, matching our elem restriction.
+    let basis = reed
+        .basis_h1_simplex(ElemTopology::Line, 1, 1, 2)
+        .unwrap();
+    let ndof = 2;
+    let nelem = 1;
+    let ng = nelem * ndof;
+    let offsets: Vec<CeedInt> = (0..ng as CeedInt).collect();
+    let restr = reed
+        .elem_restriction(nelem, ndof, 1, 1, ng, &offsets)
+        .unwrap();
+    let q = 2usize;
+    let r_q = reed
+        .strided_elem_restriction(nelem, q, 1, nelem * q, [1, q as i32, q as i32])
+        .unwrap();
+    let mut qdata = reed.vector(nelem * q).unwrap();
+    qdata.set_value(1.0).unwrap(); // Gauss q=2 weights are [1, 1]
+    let qf = reed.q_function_by_name("MassApply").unwrap();
+
+    let op: CpuOperator<'_, f64> = reed
+        .operator_builder()
+        .qfunction(qf)
+        .field("u", Some(&*restr), Some(&*basis), FieldVector::Active)
+        .field("qdata", Some(&*r_q), None, FieldVector::Passive(&*qdata))
+        .field("v", Some(&*restr), Some(&*basis), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    // n=2 ≤ 256, non-tensor basis → falls back to dense inverse.
+    assert!(OperatorTrait::operator_supports_assemble(
+        &op,
+        OperatorAssembleKind::FdmElementInverse
+    ));
+    let fdm_inv = OperatorTrait::operator_create_fdm_element_inverse(&op).unwrap();
+
+    let mut x = reed.vector(ng).unwrap();
+    let mut y = reed.vector(ng).unwrap();
+    x.set_value(1.0).unwrap();
+    OperatorTrait::apply(fdm_inv.as_ref(), &*x, &mut *y).unwrap();
+    assert!(y.as_slice().iter().any(|&v| v.abs() > 0.0));
+}
+
+#[test]
+fn test_tensor_fdm_apply_add() {
+    // Verify apply_add accumulates rather than overwrites.
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let p: usize = 3;
+    let q: usize = 4;
+    let nelem: usize = 100;
+    let ndof = p;
+    let ng = nelem * ndof;
+
+    let basis = reed
+        .basis_tensor_h1_lagrange(1, 1, p, q, QuadMode::GaussLobatto)
+        .unwrap();
+    let offsets: Vec<CeedInt> = (0..ng as CeedInt).collect();
+    let restr = reed
+        .elem_restriction(nelem, ndof, 1, 1, ng, &offsets)
+        .unwrap();
+    let r_q = reed
+        .strided_elem_restriction(nelem, q, 1, nelem * q, [1, q as i32, q as i32])
+        .unwrap();
+    // GLL q=4 quadrature weights on [-1,1]
+    let gll_w4: [f64; 4] = [1.0 / 6.0, 5.0 / 6.0, 5.0 / 6.0, 1.0 / 6.0];
+    let mut qdata = reed.vector(nelem * q).unwrap();
+    for e in 0..nelem {
+        let base = e * q;
+        for qi in 0..q {
+            qdata.as_mut_slice()[base + qi] = gll_w4[qi];
+        }
+    }
+    let qf = reed.q_function_by_name("MassApply").unwrap();
+
+    let op: CpuOperator<'_, f64> = reed
+        .operator_builder()
+        .qfunction(qf)
+        .field("u", Some(&*restr), Some(&*basis), FieldVector::Active)
+        .field("qdata", Some(&*r_q), None, FieldVector::Passive(&*qdata))
+        .field("v", Some(&*restr), Some(&*basis), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    let fdm_inv = OperatorTrait::operator_create_fdm_element_inverse(&op).unwrap();
+
+    let mut x = reed.vector(ng).unwrap();
+    let mut y = reed.vector(ng).unwrap();
+    x.set_value(2.0).unwrap();
+    y.set_value(1.0).unwrap();
+
+    // apply sets y = A^{-1} * x
+    OperatorTrait::apply(fdm_inv.as_ref(), &*x, &mut *y).unwrap();
+    let y_set = y.as_slice().to_vec();
+
+    // apply_add: y += A^{-1} * x should give y_old + y_set
+    y.set_value(1.0).unwrap();
+    OperatorTrait::apply_add(fdm_inv.as_ref(), &*x, &mut *y).unwrap();
+    for i in 0..ng {
+        let expected = 1.0 + y_set[i];
+        let actual = y.as_slice()[i];
+        assert!(
+            (actual - expected).abs() < 1e-10,
+            "apply_add mismatch at {i}: expected {expected}, got {actual}"
+        );
     }
 }
