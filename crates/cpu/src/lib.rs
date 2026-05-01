@@ -10,6 +10,7 @@
 
 mod assembly_dense;
 pub mod basis_lagrange;
+pub mod basis_nedelec;
 pub mod basis_simplex;
 pub mod composite_operator;
 pub mod elem_restriction;

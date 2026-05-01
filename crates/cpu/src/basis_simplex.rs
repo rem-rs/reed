@@ -886,7 +886,7 @@ fn line_quadrature(q: usize) -> ReedResult<(Vec<f64>, Vec<f64>)> {
 /// | 4 | 3 |
 /// | 6 | 4 |
 /// | 7 | 5 |
-fn tri_quadrature(q: usize) -> ReedResult<(Vec<f64>, Vec<f64>)> {
+pub(crate) fn tri_quadrature(q: usize) -> ReedResult<(Vec<f64>, Vec<f64>)> {
     match q {
         1 => {
             // Centroid rule (degree 1 exact)
@@ -972,7 +972,7 @@ fn tri_quadrature(q: usize) -> ReedResult<(Vec<f64>, Vec<f64>)> {
 /// | 1 | 1 |
 /// | 4 | 2 |
 /// | 5 | 3 |
-fn tet_quadrature(q: usize) -> ReedResult<(Vec<f64>, Vec<f64>)> {
+pub(crate) fn tet_quadrature(q: usize) -> ReedResult<(Vec<f64>, Vec<f64>)> {
     match q {
         1 => {
             let pts = vec![0.25, 0.25, 0.25];
