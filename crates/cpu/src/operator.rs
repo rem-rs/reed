@@ -612,6 +612,26 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
         )))
     }
 
+    /// Quick check whether tensor-FDM inverse is available for this operator
+    /// configuration, without performing the full construction.
+    fn can_tensor_fdm(&self) -> bool {
+        match self.input_plans.first() {
+            Some(p) => {
+                let field = &self.fields[p.field_index];
+                field.basis
+                    .and_then(|b| {
+                        if field.restriction.is_none() {
+                            None
+                        } else {
+                            b.tensor_fdm_1d_data()
+                        }
+                    })
+                    .is_some()
+            }
+            None => false,
+        }
+    }
+
     /// Attempt to create a tensor-FDM inverse when the first active field uses a
     /// tensor-product basis (e.g. LagrangeBasis) that provides 1D FDM data.
     fn try_create_fdm_tensor_inverse(&self) -> ReedResult<Option<Box<dyn OperatorTrait<T>>>> {
@@ -1492,10 +1512,13 @@ impl<'a, T: Scalar> OperatorTrait<T> for CpuOperator<'a, T> {
 
     fn operator_supports_assemble(&self, kind: OperatorAssembleKind) -> bool {
         match kind {
-            OperatorAssembleKind::FdmElementInverse => self
-                .active_global_dof_len()
-                .map(|n| n <= crate::fdm_inverse::FDM_DENSE_MAX_N)
-                .unwrap_or(false),
+            OperatorAssembleKind::FdmElementInverse => {
+                let dense_ok = self
+                    .active_global_dof_len()
+                    .map(|n| n <= crate::fdm_inverse::FDM_DENSE_MAX_N)
+                    .unwrap_or(false);
+                dense_ok || self.can_tensor_fdm()
+            }
             OperatorAssembleKind::Diagonal
             | OperatorAssembleKind::LinearSymbolic
             | OperatorAssembleKind::LinearNumeric

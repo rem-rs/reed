@@ -4551,8 +4551,8 @@ fn test_tensor_fdm_mass_1d_large_n() {
         .build()
         .unwrap();
 
-    // Tensor FDM path works for any n; operator_supports_assemble only
-    // checks dense-fallback limit (n ≤ 256). Creation succeeds via tensor path.
+    // Tensor FDM path works for any n; operator_supports_assemble returns
+    // true when n ≤ FDM_DENSE_MAX_N or the basis supports tensor FDM.
     let fdm_inv = OperatorTrait::operator_create_fdm_element_inverse(&op).unwrap();
 
     // Verify M * FDM_inv(e_j) ≈ e_j for j=0, middle, end
@@ -4567,8 +4567,14 @@ fn test_tensor_fdm_mass_1d_large_n() {
         OperatorTrait::apply(&op, &*fdm_ej, &mut *m_fdm_ej).unwrap();
 
         let err = (m_fdm_ej.as_slice()[j] - 1.0).abs();
+        // GLL quadrature with q points integrates polynomials exactly up to
+        // degree 2q-3.  For a mass matrix with degree-p basis functions, the
+        // integrand phi_i*phi_j reaches degree 2p, so q ≥ p+1+ceil((p+1)/2)
+        // is needed for exact integration.  Here p=4, q=5 gives 2q-3=7 < 2p=8,
+        // but FDM inverts the quadrature-approximate operator exactly (to
+        // machine precision), so M*FDM_inv ≈ I still holds.
         assert!(
-            err < 0.2,
+            err < 1e-10,
             "M * FDM_inv(e_{j})[{j}] = {}, expected ≈ 1.0, err={err}",
             m_fdm_ej.as_slice()[j]
         );
@@ -4625,8 +4631,12 @@ fn test_tensor_fdm_mass_2d_large_n() {
         .build()
         .unwrap();
 
-    // n > 256: operator_supports_assemble returns false (dense-fallback limit),
-    // but tensor FDM creation succeeds.
+    // n > 256 but basis supports tensor FDM, so both operator_supports_assemble
+    // and operator_create_fdm_element_inverse succeed.
+    assert!(OperatorTrait::operator_supports_assemble(
+        &op,
+        OperatorAssembleKind::FdmElementInverse
+    ));
     let fdm_inv = OperatorTrait::operator_create_fdm_element_inverse(&op).unwrap();
 
     // Apply to a non-zero vector — should not panic and produce non-zero output
