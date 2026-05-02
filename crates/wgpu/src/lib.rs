@@ -3,6 +3,7 @@ mod basis_nedelec;
 mod basis_rt;
 mod basis_simplex;
 mod elem_restriction;
+mod elem_restriction_face;
 pub mod operator;
 pub mod qfunction_device;
 mod runtime;
@@ -484,6 +485,34 @@ impl<T: Scalar> Backend<T> for WgpuBackend<T> {
         ))
     }
 
+    fn create_face_elem_restriction(
+        &self,
+        num_faces: usize,
+        num_dof_per_face: usize,
+        num_dof_per_elem: usize,
+        ncomp: usize,
+        num_global_dof: usize,
+        face_to_elem: Vec<(usize, usize)>,
+        face_offsets: &[CeedInt],
+        elem_offsets: &[CeedInt],
+        face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        Ok(Box::new(
+            crate::elem_restriction_face::WgpuFaceElemRestriction::<T>::new(
+                num_faces,
+                num_dof_per_face,
+                num_dof_per_elem,
+                ncomp,
+                num_global_dof,
+                face_to_elem,
+                face_offsets,
+                elem_offsets,
+                face_to_elem_local,
+                self.runtime.clone(),
+            )?,
+        ))
+    }
+
     fn create_basis_tensor_h1_lagrange(
         &self,
         dim: usize,
@@ -610,18 +639,29 @@ impl<T: Scalar> reed_core::Backend<T> for WgpuBackend<T> {
 
     fn create_face_elem_restriction(
         &self,
-        _num_faces: usize,
-        _num_dof_per_face: usize,
-        _num_dof_per_elem: usize,
-        _ncomp: usize,
-        _num_global_dof: usize,
-        _face_to_elem: Vec<(usize, usize)>,
-        _face_offsets: &[CeedInt],
-        _elem_offsets: &[CeedInt],
-        _face_to_elem_local: Vec<usize>,
+        num_faces: usize,
+        num_dof_per_face: usize,
+        num_dof_per_elem: usize,
+        ncomp: usize,
+        num_global_dof: usize,
+        face_to_elem: Vec<(usize, usize)>,
+        face_offsets: &[CeedInt],
+        elem_offsets: &[CeedInt],
+        face_to_elem_local: Vec<usize>,
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
-        Err(ReedError::BackendNotSupported(
-            "create_face_elem_restriction is not implemented for this backend".into(),
+        Ok(Box::new(
+            crate::elem_restriction_face::WgpuFaceElemRestriction::<T>::new(
+                num_faces,
+                num_dof_per_face,
+                num_dof_per_elem,
+                ncomp,
+                num_global_dof,
+                face_to_elem,
+                face_offsets,
+                elem_offsets,
+                face_to_elem_local,
+                self.runtime.clone(),
+            )?,
         ))
     }
 
