@@ -7,6 +7,7 @@
 //! |------|----------|------|------------------|
 //! | P1 triangle | Tri3 | 3 | N1 (edge) |
 //! | P2 triangle | Tri3 | 8 | N2 (edge + face) |
+//! | P3 triangle | Tri3 | 15 | N3 (edge + face) |
 //! | P1 tet | Tet4 | 6 | N1 (edge) |
 //! | P2 tet | Tet4 | 20 | N2 (edge + face) |
 //!
@@ -38,6 +39,27 @@
 //! **Face DOFs** (DOF 6–7):
 //! - φ_f^{(1)} = λ_0 λ_1 ∇λ_2
 //! - φ_f^{(2)} = λ_0 λ_2 ∇λ_1
+//!
+//! ### P3 (order 3) — Triangle
+//!
+//! Hierarchical basis extending P2 with cubic edge variations and higher-order
+//! face functions.
+//!
+//! **Triangle** — 15 DOFs: 3 per edge (9) + 2 P2 face (2) + 4 P3 face (4).
+//!
+//! **Edge DOFs** (DOF 0–8):
+//! - DOF 0–2: P1 edge φ_{ij}^{(1)} = λ_i ∇λ_j − λ_j ∇λ_i (unchanged)
+//! - DOF 3–5: P2 edge φ_{ij}^{(2)} = (λ_i − λ_j) φ_{ij}^{(1)} (unchanged)
+//! - DOF 8–10: P3 edge φ_{ij}^{(3)} = (λ_i − λ_j)^2 φ_{ij}^{(1)}
+//!
+//! **Face DOFs** (DOF 6–7 P2, DOF 11–14 P3):
+//! - DOF 6–7: P2 face λ_0 λ_1 ∇λ_2, λ_0 λ_2 ∇λ_1 (unchanged)
+//! - DOF 11: λ_0 λ_1 λ_2 ∇λ_0
+//! - DOF 12: λ_0 λ_1 λ_2 ∇λ_1
+//! - DOF 13: λ_0^2 λ_1 ∇λ_2
+//! - DOF 14: λ_0 λ_1^2 ∇λ_2
+//!
+//! P2 is a direct subspace: DOFs 0–7 match the P2 basis exactly.
 //!
 //! **Tetrahedron** — 20 DOFs: 2 per edge (12) + 2 per face (8).
 //!
@@ -90,7 +112,7 @@ impl<T: Scalar> NedelecBasis<T> {
     ///
     /// # Parameters
     /// * `topo` — `ElemTopology::Triangle` or `Tet`.
-    /// * `p`    — polynomial order. Triangle: 1 or 2; Tet: 1 or 2.
+    /// * `p`    — polynomial order. Triangle: 1, 2, or 3; Tet: 1 or 2.
     /// * `q`    — number of quadrature points (see `tri_quadrature` / `tet_quadrature` for
     ///            valid values).
     ///
@@ -101,9 +123,10 @@ impl<T: Scalar> NedelecBasis<T> {
             ElemTopology::Triangle => match p {
                 1 => (2, 3),
                 2 => (2, 8),
+                3 => (2, 15),
                 _ => {
                     return Err(ReedError::Basis(format!(
-                        "NedelecBasis: p={p} on Triangle not supported; use p=1 or p=2"
+                        "NedelecBasis: p={p} on Triangle not supported; use p=1, 2, or 3"
                     )));
                 }
             },
@@ -172,11 +195,10 @@ impl<T: Scalar> NedelecBasis<T> {
         for (qi, pt) in qpts.iter().enumerate() {
             match dim {
                 2 => {
-                    let (phi, curl) = if order == 2 {
-                        tri_nedelec_p2(pt[0], pt[1])
-                    } else {
-                        let (p, c) = tri_nedelec_p1(pt[0], pt[1]);
-                        (p, c)
+                    let (phi, curl) = match order {
+                        3 => tri_nedelec_p3(pt[0], pt[1]),
+                        2 => tri_nedelec_p2(pt[0], pt[1]),
+                        _ => tri_nedelec_p1(pt[0], pt[1]),
                     };
                     for dof in 0..num_dof {
                         for d in 0..dim {
@@ -700,6 +722,173 @@ fn tri_nedelec_p2(x: f64, y: f64) -> (Vec<f64>, Vec<f64>) {
     (phi, curl)
 }
 
+/// P3 Nedelec (first kind) basis functions on the reference triangle.
+///
+/// Hierarchical construction with 15 DOFs: P2 subspace (DOFs 0–7) + P3 extensions.
+///
+/// **DOF layout** (P2-subspace preserving):
+/// - DOF 0–2: P1 edge basis  φ_{ij}^{(1)} = λ_i ∇λ_j − λ_j ∇λ_i
+/// - DOF 3–5: P2 edge bubble φ_{ij}^{(2)} = (λ_i − λ_j) φ_{ij}^{(1)}
+/// - DOF 6–7: P2 face functions λ_0 λ_1 ∇λ_2, λ_0 λ_2 ∇λ_1
+/// - DOF 8–10: P3 edge bubble φ_{ij}^{(3)} = (λ_i − λ_j)^2 φ_{ij}^{(1)}
+/// - DOF 11: λ_0 λ_1 λ_2 ∇λ_0 (P3 face)
+/// - DOF 12: λ_0 λ_1 λ_2 ∇λ_1 (P3 face)
+/// - DOF 13: λ_0^2 λ_1 ∇λ_2   (P3 face)
+/// - DOF 14: λ_0 λ_1^2 ∇λ_2   (P3 face)
+///
+/// ## Curl formulas
+///
+/// P3 edge: curl((λ_i−λ_j)^2·v) = 2(λ_i−λ_j)(∇λ_i−∇λ_j)×v + (λ_i−λ_j)^2·curl(v)
+///
+/// P3 face: curl(λ_a λ_b λ_c ∇λ_k) = ∇(λ_a λ_b λ_c) × ∇λ_k
+///          where ∇(λ_a λ_b λ_c) = λ_b λ_c ∇λ_a + λ_a λ_c ∇λ_b + λ_a λ_b ∇λ_c
+///
+/// Returns `(phi[num_dof * 2], curl[num_dof])`.
+fn tri_nedelec_p3(x: f64, y: f64) -> (Vec<f64>, Vec<f64>) {
+    let lam = [1.0 - x - y, x, y]; // λ₀, λ₁, λ₂
+    let dlam: [[f64; 2]; 3] = [
+        [-1.0, -1.0], // ∇λ₀
+        [1.0, 0.0],   // ∇λ₁
+        [0.0, 1.0],   // ∇λ₂
+    ];
+
+    // Edges: (0,1), (1,2), (2,0)
+    let edges = [(0usize, 1usize), (1, 2), (2, 0)];
+    let num_dof = 15;
+    let mut phi = vec![0.0f64; num_dof * 2];
+    let mut curl = vec![0.0f64; num_dof];
+
+    // Pre-compute P1 edge values (needed for P3 edge reuse)
+    let mut p1_edge_val = [[0.0f64; 2]; 3]; // [edge][component]
+    let mut p1_curl_val = [0.0f64; 3];
+    let mut diff_lam = [0.0f64; 3]; // λ_i - λ_j for each edge
+
+    for (dof_p1, &(i, j)) in edges.iter().enumerate() {
+        let f = lam[i] - lam[j];
+        diff_lam[dof_p1] = f;
+
+        // ── P1 edge basis (DOFs 0–2) ──────────────────────────────────
+        for d in 0..2 {
+            let val = lam[i] * dlam[j][d] - lam[j] * dlam[i][d];
+            phi[dof_p1 * 2 + d] = val;
+            p1_edge_val[dof_p1][d] = val;
+        }
+        let cp1 = 2.0 * (dlam[i][0] * dlam[j][1] - dlam[i][1] * dlam[j][0]);
+        curl[dof_p1] = cp1;
+        p1_curl_val[dof_p1] = cp1;
+
+        // ── P2 edge bubble (DOFs 3–5) ─────────────────────────────────
+        for d in 0..2 {
+            phi[(3 + dof_p1) * 2 + d] = f * p1_edge_val[dof_p1][d];
+        }
+        // curl(f · v) = ∇f × v + f · curl(v)
+        let df = [
+            dlam[i][0] - dlam[j][0],
+            dlam[i][1] - dlam[j][1],
+        ];
+        let v = p1_edge_val[dof_p1];
+        let df_cross_v = df[0] * v[1] - df[1] * v[0];
+        curl[3 + dof_p1] = df_cross_v + f * cp1;
+    }
+
+    // ── P2 Face functions (DOFs 6–7) ──────────────────────────────────
+    // φ_f^{(1)} = λ_0 λ_1 ∇λ_2
+    {
+        let dof = 6;
+        for d in 0..2 {
+            phi[dof * 2 + d] = lam[0] * lam[1] * dlam[2][d];
+        }
+        let gx = lam[0] * dlam[1][0] + lam[1] * dlam[0][0];
+        let gy = lam[0] * dlam[1][1] + lam[1] * dlam[0][1];
+        curl[dof] = gx * dlam[2][1] - gy * dlam[2][0];
+    }
+    // φ_f^{(2)} = λ_0 λ_2 ∇λ_1
+    {
+        let dof = 7;
+        for d in 0..2 {
+            phi[dof * 2 + d] = lam[0] * lam[2] * dlam[1][d];
+        }
+        let gx = lam[0] * dlam[2][0] + lam[2] * dlam[0][0];
+        let gy = lam[0] * dlam[2][1] + lam[2] * dlam[0][1];
+        curl[dof] = gx * dlam[1][1] - gy * dlam[1][0];
+    }
+
+    // ── P3 edge bubble (DOFs 8–10) ────────────────────────────────────
+    // φ_{ij}^{(3)} = (λ_i − λ_j)^2 · φ_{ij}^{(1)}
+    for dof_p1 in 0..3 {
+        let f = diff_lam[dof_p1];
+        let f2 = f * f;
+        for d in 0..2 {
+            phi[(8 + dof_p1) * 2 + d] = f2 * p1_edge_val[dof_p1][d];
+        }
+        // curl = ∇(f^2) × v + f^2 · curl(v)
+        //      = 2f ∇f × v + f^2 · curl_p1
+        let (i, j) = edges[dof_p1];
+        let df = [
+            dlam[i][0] - dlam[j][0],
+            dlam[i][1] - dlam[j][1],
+        ];
+        let v = p1_edge_val[dof_p1];
+        let df_cross_v = df[0] * v[1] - df[1] * v[0];
+        curl[8 + dof_p1] = 2.0 * f * df_cross_v + f2 * p1_curl_val[dof_p1];
+    }
+
+    // ── P3 Face functions (DOFs 11–14) ─────────────────────────────────
+    // Shared: ∇(λ_0 λ_1 λ_2) = λ_1λ_2 ∇λ_0 + λ_0λ_2 ∇λ_1 + λ_0λ_1 ∇λ_2
+    let g_triple = [
+        lam[1] * lam[2] * dlam[0][0] + lam[0] * lam[2] * dlam[1][0] + lam[0] * lam[1] * dlam[2][0],
+        lam[1] * lam[2] * dlam[0][1] + lam[0] * lam[2] * dlam[1][1] + lam[0] * lam[1] * dlam[2][1],
+    ];
+
+    // DOF 11: λ_0 λ_1 λ_2 ∇λ_0
+    {
+        let dof = 11;
+        let b = lam[0] * lam[1] * lam[2];
+        for d in 0..2 {
+            phi[dof * 2 + d] = b * dlam[0][d];
+        }
+        // curl = ∇(λ_0 λ_1 λ_2) × ∇λ_0 = λ_0(λ_1 − λ_2)
+        curl[dof] = g_triple[0] * dlam[0][1] - g_triple[1] * dlam[0][0];
+    }
+
+    // DOF 12: λ_0 λ_1 λ_2 ∇λ_1
+    {
+        let dof = 12;
+        let b = lam[0] * lam[1] * lam[2];
+        for d in 0..2 {
+            phi[dof * 2 + d] = b * dlam[1][d];
+        }
+        // curl = ∇(λ_0 λ_1 λ_2) × ∇λ_1 = λ_1 λ_2 − λ_0 λ_1
+        curl[dof] = g_triple[0] * dlam[1][1] - g_triple[1] * dlam[1][0];
+    }
+
+    // DOF 13: λ_0^2 λ_1 ∇λ_2
+    {
+        let dof = 13;
+        for d in 0..2 {
+            phi[dof * 2 + d] = lam[0] * lam[0] * lam[1] * dlam[2][d];
+        }
+        // curl = ∇(λ_0^2 λ_1) × ∇λ_2 = λ_0^2 − 2λ_0 λ_1
+        let gx = 2.0 * lam[0] * lam[1] * dlam[0][0] + lam[0] * lam[0] * dlam[1][0];
+        let gy = 2.0 * lam[0] * lam[1] * dlam[0][1] + lam[0] * lam[0] * dlam[1][1];
+        curl[dof] = gx * dlam[2][1] - gy * dlam[2][0];
+    }
+
+    // DOF 14: λ_0 λ_1^2 ∇λ_2
+    {
+        let dof = 14;
+        for d in 0..2 {
+            phi[dof * 2 + d] = lam[0] * lam[1] * lam[1] * dlam[2][d];
+        }
+        // curl = ∇(λ_0 λ_1^2) × ∇λ_2 = 2λ_0 λ_1 − λ_1^2
+        let gx = lam[1] * lam[1] * dlam[0][0] + 2.0 * lam[0] * lam[1] * dlam[1][0];
+        let gy = lam[1] * lam[1] * dlam[0][1] + 2.0 * lam[0] * lam[1] * dlam[1][1];
+        curl[dof] = gx * dlam[2][1] - gy * dlam[2][0];
+    }
+
+    (phi, curl)
+}
+
 /// P1 Nedelec (first kind) basis functions on the reference tetrahedron.
 ///
 /// Barycentric coordinates: λ₀ = 1−x−y−z, λ₁ = x, λ₂ = y, λ₃ = z.
@@ -1050,10 +1239,11 @@ mod tests {
 
     #[test]
     fn reject_invalid_p() {
-        // Triangle: p=1, p=2 are OK; higher p rejected
+        // Triangle: p=1, p=2, p=3 are OK; higher p rejected
         assert!(NedelecBasis::<f64>::new(ElemTopology::Triangle, 1, 3).is_ok());
         assert!(NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 3).is_ok());
-        assert!(NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 3).is_err());
+        assert!(NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 3).is_ok());
+        assert!(NedelecBasis::<f64>::new(ElemTopology::Triangle, 4, 3).is_err());
         // Tet: p=1, p=2 are OK; higher p rejected
         assert!(NedelecBasis::<f64>::new(ElemTopology::Tet, 1, 4).is_ok());
         assert!(NedelecBasis::<f64>::new(ElemTopology::Tet, 2, 4).is_ok());
@@ -1646,6 +1836,226 @@ mod tests {
                     curl_p1[dof * 3 + d]
                 );
             }
+        }
+    }
+
+    // ── P3 triangle tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn construct_tri_nedelec_p3() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 6).unwrap();
+        assert_eq!(basis.dim(), 2);
+        assert_eq!(basis.num_dof(), 15);
+        assert_eq!(basis.num_qpoints(), 6);
+        assert_eq!(basis.num_comp(), 2);
+    }
+
+    #[test]
+    fn tri_nedelec_p3_p2_subspace() {
+        // The P2 basis should be exactly the first 8 DOFs of the P3 basis.
+        let basis_p2 = NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 6).unwrap();
+        let basis_p3 = NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 6).unwrap();
+
+        assert_eq!(basis_p2.num_qpoints(), basis_p3.num_qpoints());
+
+        for qpt in 0..basis_p2.num_qpoints() {
+            for dof in 0..8 {
+                for d in 0..2 {
+                    let v2 = basis_p2.interp[(qpt * 8 + dof) * 2 + d];
+                    let v3 = basis_p3.interp[(qpt * 15 + dof) * 2 + d];
+                    assert!(
+                        (v2 - v3).abs() < TOL,
+                        "P2/P3 mismatch at qpt={qpt} dof={dof} d={d}: {v2} vs {v3}"
+                    );
+                }
+            }
+            for dof in 0..8 {
+                let c2 = basis_p2.curl_matrix[qpt * 8 + dof];
+                let c3 = basis_p3.curl_matrix[qpt * 15 + dof];
+                assert!(
+                    (c2 - c3).abs() < TOL,
+                    "P2/P3 curl mismatch at qpt={qpt} dof={dof}: {c2} vs {c3}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tri_nedelec_p3_edge_bubble_zero_at_midpoint() {
+        // P3 edge bubble functions (DOF 8–10) should vanish at edge midpoints
+        // where λ_i = λ_j (since (λ_i − λ_j)^2 = 0).
+        for &(x, y, dof_bubble) in &[
+            (0.5, 0.0, 8),  // edge (0,1) midpoint, bubble DOF 8
+            (0.5, 0.5, 9),  // edge (1,2) midpoint, bubble DOF 9
+            (0.0, 0.5, 10), // edge (2,0) midpoint, bubble DOF 10
+        ] {
+            let (phi, _curl) = tri_nedelec_p3(x, y);
+            let fx = phi[dof_bubble * 2];
+            let fy = phi[dof_bubble * 2 + 1];
+            assert!(
+                fx.abs() < TOL && fy.abs() < TOL,
+                "P3 edge bubble DOF {dof_bubble} non-zero at midpoint ({x},{y}): ({fx},{fy})"
+            );
+        }
+    }
+
+    #[test]
+    fn tri_nedelec_p3_face_zero_at_vertices() {
+        // P3 face functions (DOFs 11–14) should vanish at all vertices
+        // (each contains at least two λ factors and at each vertex at most one λ = 1).
+        for &(x, y) in &[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)] {
+            let (phi, _curl) = tri_nedelec_p3(x, y);
+            for dof in 11..15 {
+                let fx = phi[dof * 2];
+                let fy = phi[dof * 2 + 1];
+                assert!(
+                    fx.abs() < TOL && fy.abs() < TOL,
+                    "P3 face DOF {dof} non-zero at vertex ({x},{y}): ({fx},{fy})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tri_nedelec_p3_curl_formulas() {
+        // Verify analytic curl formulas at a test point.
+        let x = 0.3;
+        let y = 0.4;
+        let lam0 = 1.0 - x - y; // 0.3
+        let lam1 = x; // 0.3
+        let lam2 = y; // 0.4
+
+        let (_phi, curl) = tri_nedelec_p3(x, y);
+
+        // DOF 8 (edge 0 P3, vertices (0,1)): f = λ_0−λ_1 = 0.3−0.3 = 0
+        // curl = 4*f^2 = 0
+        let f0 = lam0 - lam1; // 0.0
+        let expected_curl_8 = 4.0 * f0 * f0;
+        assert!((curl[8] - expected_curl_8).abs() < TOL,
+            "P3 edge 0 curl: got {}, expected {}", curl[8], expected_curl_8);
+
+        // DOF 9 (edge 1 P3, vertices (1,2)): f = λ_1−λ_2 = 0.3−0.4 = −0.1
+        let f1 = lam1 - lam2;
+        let expected_curl_9 = 4.0 * f1 * f1;
+        assert!((curl[9] - expected_curl_9).abs() < TOL,
+            "P3 edge 1 curl: got {}, expected {}", curl[9], expected_curl_9);
+
+        // DOF 10 (edge 2 P3, vertices (2,0)): f = λ_2−λ_0 = 0.4−0.3 = 0.1
+        let f2 = lam2 - lam0;
+        let expected_curl_10 = 4.0 * f2 * f2;
+        assert!((curl[10] - expected_curl_10).abs() < TOL,
+            "P3 edge 2 curl: got {}, expected {}", curl[10], expected_curl_10);
+
+        // DOF 11: curl = λ_0(λ_1 − λ_2) = 0.3*(0.3-0.4) = -0.03
+        let expected_curl_11 = lam0 * (lam1 - lam2);
+        assert!((curl[11] - expected_curl_11).abs() < TOL,
+            "P3 face 0 curl: got {}, expected {}", curl[11], expected_curl_11);
+
+        // DOF 12: curl = λ_1 λ_2 − λ_0 λ_1 = 0.3*0.4 - 0.3*0.3 = 0.12 - 0.09 = 0.03
+        let expected_curl_12 = lam1 * lam2 - lam0 * lam1;
+        assert!((curl[12] - expected_curl_12).abs() < TOL,
+            "P3 face 1 curl: got {}, expected {}", curl[12], expected_curl_12);
+
+        // DOF 13: curl = λ_0^2 − 2λ_0 λ_1 = 0.09 - 0.18 = -0.09
+        let expected_curl_13 = lam0 * lam0 - 2.0 * lam0 * lam1;
+        assert!((curl[13] - expected_curl_13).abs() < TOL,
+            "P3 face 2 curl: got {}, expected {}", curl[13], expected_curl_13);
+
+        // DOF 14: curl = 2λ_0 λ_1 − λ_1^2 = 0.18 - 0.09 = 0.09
+        let expected_curl_14 = 2.0 * lam0 * lam1 - lam1 * lam1;
+        assert!((curl[14] - expected_curl_14).abs() < TOL,
+            "P3 face 3 curl: got {}, expected {}", curl[14], expected_curl_14);
+    }
+
+    #[test]
+    fn tri_nedelec_p3_interp_forward_size() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 6).unwrap();
+        let nelem = 2;
+        let ndof = 15;
+        let nqpts = 6;
+        let dim = 2;
+        let u = vec![0.0f64; nelem * ndof * dim];
+        let mut v = vec![0.0f64; nelem * nqpts * dim];
+        basis
+            .apply(nelem, false, EvalMode::Interp, &u, &mut v)
+            .unwrap();
+    }
+
+    #[test]
+    fn tri_nedelec_p3_hcurl_forward_size() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 6).unwrap();
+        let nelem = 2;
+        let ndof = 15;
+        let nqpts = 6;
+        let dim = 2;
+        let u = vec![0.0f64; nelem * ndof * dim];
+        let mut v = vec![0.0f64; nelem * nqpts];
+        basis
+            .apply(nelem, false, EvalMode::HCurl, &u, &mut v)
+            .unwrap();
+    }
+
+    #[test]
+    fn tri_nedelec_p3_transpose_consistency() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 6).unwrap();
+        let nelem = 1;
+        let ndof = 15;
+        let nqpts = 6;
+        let dim = 2;
+
+        let mut u_dof = vec![0.0f64; nelem * ndof * dim];
+        for dof in 0..ndof {
+            u_dof[dof * dim] = (dof + 1) as f64;
+        }
+
+        let mut v_qpts = vec![0.0f64; nelem * nqpts * dim];
+        basis
+            .apply(nelem, false, EvalMode::Interp, &u_dof, &mut v_qpts)
+            .unwrap();
+
+        let mut u_dof_back = vec![0.0f64; nelem * ndof * dim];
+        basis
+            .apply(nelem, true, EvalMode::Interp, &v_qpts, &mut u_dof_back)
+            .unwrap();
+
+        for dof in 0..ndof {
+            let val = u_dof_back[dof * dim];
+            assert!(
+                val.abs() > TOL,
+                "P3 transpose consistency: dof {dof} is zero"
+            );
+        }
+    }
+
+    #[test]
+    fn tri_nedelec_p3_hcurl_transpose_consistency() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 6).unwrap();
+        let nelem = 1;
+        let ndof = 15;
+        let nqpts = 6;
+        let dim = 2;
+
+        let mut u_dof = vec![0.0f64; nelem * ndof * dim];
+        for dof in 0..ndof {
+            u_dof[dof * dim] = (dof + 1) as f64;
+        }
+
+        let mut v_curl = vec![0.0f64; nelem * nqpts];
+        basis
+            .apply(nelem, false, EvalMode::HCurl, &u_dof, &mut v_curl)
+            .unwrap();
+
+        let mut u_dof_back = vec![0.0f64; nelem * ndof * dim];
+        basis
+            .apply(nelem, true, EvalMode::HCurl, &v_curl, &mut u_dof_back)
+            .unwrap();
+
+        for dof in 0..ndof {
+            let val = u_dof_back[dof * dim];
+            assert!(
+                val.abs() > TOL,
+                "P3 HCurl transpose consistency: dof {dof} is zero"
+            );
         }
     }
 }
