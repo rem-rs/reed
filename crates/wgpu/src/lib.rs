@@ -3,10 +3,12 @@ mod basis_nedelec;
 mod basis_rt;
 mod basis_simplex;
 mod elem_restriction;
+pub mod operator;
 pub mod qfunction_device;
 mod runtime;
 mod vector;
 
+pub use operator::{WgpuFieldVector, WgpuOperator, WgpuOperatorBuilder};
 pub use qfunction_device::{
     IdentityF32Wgpu, IdentityScalarF32Wgpu, Mass1DBuildF32Wgpu, Mass2DBuildF32Wgpu,
     Mass3DBuildF32Wgpu, MassApplyF32Wgpu, MassApplyInterpTimesWeightF32Wgpu, Poisson1DApplyF32Wgpu,
