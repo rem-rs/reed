@@ -545,6 +545,18 @@ impl<T: Scalar> BasisTrait<T> for SimplexBasis<T> {
     fn q_ref(&self) -> &[T] {
         &self.q_ref
     }
+
+    fn face_q_weights(&self, local_face: usize) -> Option<Vec<T>> {
+        crate::face_quadrature::face_quadrature_simplex(self, local_face)
+            .map(|(_, w)| w)
+            .ok()
+    }
+
+    fn face_q_ref(&self, local_face: usize) -> Option<Vec<T>> {
+        crate::face_quadrature::face_quadrature_simplex(self, local_face)
+            .map(|(qr, _)| qr)
+            .ok()
+    }
 }
 
 // ── shape functions ───────────────────────────────────────────────────────────
