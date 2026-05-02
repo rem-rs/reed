@@ -71,6 +71,17 @@ impl<T: Scalar> LagrangeBasis<T> {
             grad,
         })
     }
+
+    /// Row-major interpolation operator `[num_qpoints × num_dof]` (1D data,
+    /// same packing as the tensor-product basis slices).
+    pub fn interp_matrix(&self) -> &[T] {
+        &self.interp
+    }
+
+    /// Row-major gradient operator `[num_qpoints × num_dof]` (1D data).
+    pub fn grad_matrix(&self) -> &[T] {
+        &self.grad
+    }
 }
 
 impl<T: Scalar> BasisTrait<T> for LagrangeBasis<T> {
@@ -1428,7 +1439,7 @@ pub fn tensor_contract_accumulate<T: Scalar>(
     tensor_contract_accumulate_strided(b, u, 1, v, 1, q, p, transpose);
 }
 
-fn to_scalar<T: Scalar>(value: f64) -> ReedResult<T> {
+pub(crate) fn to_scalar<T: Scalar>(value: f64) -> ReedResult<T> {
     T::from(value).ok_or_else(|| ReedError::Basis(format!("failed to convert {} to scalar", value)))
 }
 
@@ -1527,7 +1538,7 @@ fn barycentric_weights(nodes: &[f64]) -> Vec<f64> {
     weights
 }
 
-fn build_interp<T: Scalar>(nodes: &[f64], qref: &[f64]) -> ReedResult<Vec<T>> {
+pub(crate) fn build_interp<T: Scalar>(nodes: &[f64], qref: &[f64]) -> ReedResult<Vec<T>> {
     let bary = barycentric_weights(nodes);
     let mut interp = Vec::with_capacity(qref.len() * nodes.len());
     for &x in qref {
@@ -1556,7 +1567,7 @@ fn build_interp<T: Scalar>(nodes: &[f64], qref: &[f64]) -> ReedResult<Vec<T>> {
     Ok(interp)
 }
 
-fn build_grad<T: Scalar>(nodes: &[f64], qref: &[f64]) -> ReedResult<Vec<T>> {
+pub(crate) fn build_grad<T: Scalar>(nodes: &[f64], qref: &[f64]) -> ReedResult<Vec<T>> {
     let bary = barycentric_weights(nodes);
     let interp = build_interp::<T>(nodes, qref)?;
     let interp_f64 = interp

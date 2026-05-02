@@ -12,6 +12,8 @@ mod assembly_dense;
 pub mod face_quadrature;
 pub mod basis_lagrange;
 pub mod basis_nedelec;
+pub mod basis_prism;
+pub mod basis_pyramid;
 pub mod basis_rt;
 pub mod basis_simplex;
 pub mod composite_operator;
@@ -25,6 +27,8 @@ pub mod vector;
 
 pub use basis_lagrange::LagrangeBasis;
 pub use basis_nedelec::NedelecBasis;
+pub use basis_prism::PrismBasis;
+pub use basis_pyramid::PyramidBasis;
 pub use basis_rt::RaviartThomasBasis;
 pub use basis_simplex::SimplexBasis;
 use elem_restriction::CpuElemRestriction;
@@ -153,7 +157,25 @@ impl<T: Scalar> Backend<T> for CpuBackend<T> {
         ncomp: usize,
         q: usize,
     ) -> ReedResult<Box<dyn BasisTrait<T>>> {
-        Ok(Box::new(SimplexBasis::<T>::new(topo, poly, ncomp, q)?))
+        match topo {
+            ElemTopology::Prism => {
+                // Use poly for both triangle and line degrees.
+                // The line direction uses Gauss-Lobatto-Lagrange (needs p >= 2);
+                // for poly=1 we fall back to linear nodes at [-1, 1].
+                Ok(Box::new(PrismBasis::<T>::new(poly, poly, q, q + 1, ncomp)?))
+            }
+            ElemTopology::Pyramid => {
+                // Pyramid via collapsed-coordinate hex: use poly for hex degree,
+                // q for 1D quadrature, Gauss mode to avoid apex singularity.
+                Ok(Box::new(PyramidBasis::<T>::new(
+                    poly,
+                    q,
+                    QuadMode::Gauss,
+                    ncomp,
+                )?))
+            }
+            _ => Ok(Box::new(SimplexBasis::<T>::new(topo, poly, ncomp, q)?)),
+        }
     }
 
     fn create_basis_hcurl_nedelec(
