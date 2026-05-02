@@ -15,6 +15,7 @@ pub mod basis_rt;
 pub mod basis_simplex;
 pub mod composite_operator;
 pub mod elem_restriction;
+pub mod elem_restriction_face;
 mod fdm_inverse;
 mod fdm_tensor;
 pub mod gallery;
