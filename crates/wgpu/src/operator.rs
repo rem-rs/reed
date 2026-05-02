@@ -29,8 +29,8 @@ use reed_core::{
     elem_restriction::ElemRestrictionTrait,
     enums::{EvalMode, TransposeMode},
     error::{ReedError, ReedResult},
-    operator::{OperatorTrait, OperatorTransposeRequest},
-    qfunction::QFunctionTrait,
+    operator::{OperatorAssembleKind, OperatorTrait, OperatorTransposeRequest},
+    qfunction::{QFunctionCategory, QFunctionTrait},
     scalar::Scalar,
     vector::VectorTrait,
     QFunctionContext,
@@ -442,11 +442,62 @@ impl<T: Scalar> OperatorTrait<T> for WgpuOperator<T> {
         input_len
     }
 
-    /// v1: diagonal assembly not implemented on GPU path.
-    fn linear_assemble_diagonal(&self, _assembled: &mut dyn VectorTrait<T>) -> ReedResult<()> {
-        Err(ReedError::Operator(
-            "WgpuOperator::linear_assemble_diagonal is not implemented on the GPU path".into(),
-        ))
+    /// Extract operator diagonal via unit-vector probing.
+    ///
+    /// For each global DOF `j`, applies `A * e_j` and stores `(A * e_j)[j]`
+    /// into `assembled[j]`. Zeroes `assembled` before filling.
+    fn linear_assemble_diagonal(&self, assembled: &mut dyn VectorTrait<T>) -> ReedResult<()> {
+        let n = self.global_vector_len_hint().ok_or_else(|| {
+            ReedError::Operator(
+                "linear_assemble_diagonal: cannot determine active global DOF length".into(),
+            )
+        })?;
+        if assembled.len() != n {
+            return Err(ReedError::Operator(format!(
+                "linear_assemble_diagonal: assembled length {} != active global DOF count {}",
+                assembled.len(),
+                n
+            )));
+        }
+        assembled.set_value(T::ZERO)?;
+        for i in 0..n {
+            let mut input = vec![T::ZERO; n];
+            input[i] = T::ONE;
+            let x = reed_cpu::vector::CpuVector::from_vec(input);
+            let mut y = reed_cpu::vector::CpuVector::new(n);
+            self.apply(&x, &mut y)?;
+            assembled.as_mut_slice()[i] = y.as_slice()[i];
+        }
+        Ok(())
+    }
+
+    /// Same as [`Self::linear_assemble_diagonal`] but accumulates into `assembled`
+    /// without zeroing it first (libCEED `CeedOperatorLinearAssembleAddDiagonal`).
+    fn linear_assemble_add_diagonal(
+        &self,
+        assembled: &mut dyn VectorTrait<T>,
+    ) -> ReedResult<()> {
+        let n = self.global_vector_len_hint().ok_or_else(|| {
+            ReedError::Operator(
+                "linear_assemble_add_diagonal: cannot determine active global DOF length".into(),
+            )
+        })?;
+        if assembled.len() != n {
+            return Err(ReedError::Operator(format!(
+                "linear_assemble_add_diagonal: assembled length {} != active global DOF count {}",
+                assembled.len(),
+                n
+            )));
+        }
+        for i in 0..n {
+            let mut input = vec![T::ZERO; n];
+            input[i] = T::ONE;
+            let x = reed_cpu::vector::CpuVector::from_vec(input);
+            let mut y = reed_cpu::vector::CpuVector::new(n);
+            self.apply(&x, &mut y)?;
+            assembled.as_mut_slice()[i] += y.as_slice()[i];
+        }
+        Ok(())
     }
 
     /// v1: adjoint not implemented; Forward delegates to [`Self::apply`].
@@ -487,6 +538,59 @@ impl<T: Scalar> OperatorTrait<T> for WgpuOperator<T> {
             ));
         }
         Ok(())
+    }
+
+    fn operator_supports_assemble(&self, kind: OperatorAssembleKind) -> bool {
+        match kind {
+            OperatorAssembleKind::Diagonal => self.global_vector_len_hint().is_some(),
+            OperatorAssembleKind::FdmElementInverse => self
+                .global_vector_len_hint()
+                .map(|n| n <= reed_cpu::FDM_DENSE_MAX_N)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// Create an FDM (fast diagonalization) element inverse for this operator.
+    ///
+    /// Assembles the global Jacobian column-by-column via [`Self::apply`], inverts
+    /// the dense matrix, and returns a [`reed_cpu::CpuFdmDenseInverseOperator`]
+    /// that multiplies by \(A^{-1}\). Only supported when the active global DOF
+    /// count does not exceed [`reed_cpu::FDM_DENSE_MAX_N`].
+    fn operator_create_fdm_element_inverse(
+        &self,
+    ) -> ReedResult<Box<dyn OperatorTrait<T>>> {
+        let n = self.global_vector_len_hint().ok_or_else(|| {
+            ReedError::Operator(
+                "operator_create_fdm_element_inverse: cannot determine active global DOF length"
+                    .into(),
+            )
+        })?;
+        if n > reed_cpu::FDM_DENSE_MAX_N {
+            return Err(ReedError::Operator(format!(
+                "operator_create_fdm_element_inverse: global DOF {} exceeds dense limit {}",
+                n,
+                reed_cpu::FDM_DENSE_MAX_N
+            )));
+        }
+        let len = n.checked_mul(n).ok_or_else(|| {
+            ReedError::Operator(
+                "operator_create_fdm_element_inverse: n*n overflow".into(),
+            )
+        })?;
+        let mut a_vec = vec![T::ZERO; len];
+        for j in 0..n {
+            let mut input = vec![T::ZERO; n];
+            input[j] = T::ONE;
+            let x = reed_cpu::vector::CpuVector::from_vec(input);
+            let mut y = reed_cpu::vector::CpuVector::new(n);
+            self.apply(&x, &mut y)?;
+            for i in 0..n {
+                a_vec[i + j * n] = y.as_slice()[i];
+            }
+        }
+        let inv = reed_cpu::invert_dense_col_major(&a_vec, n)?;
+        Ok(Box::new(reed_cpu::CpuFdmDenseInverseOperator::new(n, inv)))
     }
 }
 
@@ -683,6 +787,24 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
                         .into(),
                 )
             })?;
+
+        // Exterior operator validation (v1: detect and validate face-compatible setup).
+        let is_exterior = qfunction.q_function_category() == QFunctionCategory::Exterior;
+        if is_exterior {
+            // For exterior (boundary) operators, fields should use face-element restrictions.
+            // v1: only check that all restricted fields have a restriction (future: validate
+            // that restrictions are face-element type and that basis dim > face dim).
+            for field in &self.fields {
+                if field.basis.is_some() && field.restriction.is_none() {
+                    return Err(ReedError::Operator(format!(
+                        "exterior operator field '{}' has a basis but no restriction; \
+                         face-element operators require restrictions for gather/scatter",
+                        field.name
+                    )));
+                }
+            }
+        }
+        let _ = is_exterior; // used in future face-validation expansion
 
         Ok(WgpuOperator {
             runtime,
@@ -979,5 +1101,293 @@ mod tests {
         let out_slice = output.as_slice();
         let has_nonzero = out_slice.iter().any(|&v| v.abs() > 1e-8);
         assert!(has_nonzero, "mass operator output is all zeros");
+    }
+
+    /// Verify operator_supports_assemble for Diagonal and FdmElementInverse.
+    #[test]
+    fn operator_supports_assemble_probes() {
+        let Some(rt) = gpu_runtime_or_skip() else {
+            return;
+        };
+
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let restr2 = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis =
+            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis2 =
+            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let qf = Identity::with_components(1);
+
+        let op = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(qf))
+            .field(
+                "input",
+                Some(Box::new(restr)),
+                Some(Box::new(basis)),
+                WgpuFieldVector::Active,
+            )
+            .field(
+                "output",
+                Some(Box::new(restr2)),
+                Some(Box::new(basis2)),
+                WgpuFieldVector::Active,
+            )
+            .build()
+            .unwrap();
+
+        assert!(op.operator_supports_assemble(OperatorAssembleKind::Diagonal));
+        // Small operator (n=4) should support FDM element inverse
+        assert!(op.operator_supports_assemble(
+            OperatorAssembleKind::FdmElementInverse
+        ));
+        // v1: other kinds not supported on GPU path
+        assert!(!op.operator_supports_assemble(OperatorAssembleKind::LinearSymbolic));
+        assert!(!op.operator_supports_assemble(OperatorAssembleKind::LinearNumeric));
+    }
+
+    /// Integration test: WgpuOperator::linear_assemble_diagonal matches CpuOperator.
+    #[test]
+    fn diagonal_assembly_matches_cpu() {
+        let Some(rt) = gpu_runtime_or_skip() else {
+            return;
+        };
+
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+
+        // WGPU operator
+        let restr_w = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        )
+        .unwrap();
+        let restr_w2 = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        )
+        .unwrap();
+        let basis_w =
+            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis_w2 =
+            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let op_wgpu = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field(
+                "input",
+                Some(Box::new(restr_w)),
+                Some(Box::new(basis_w)),
+                WgpuFieldVector::Active,
+            )
+            .field(
+                "output",
+                Some(Box::new(restr_w2)),
+                Some(Box::new(basis_w2)),
+                WgpuFieldVector::Active,
+            )
+            .operator_label("diag-test-wgpu")
+            .build()
+            .unwrap();
+
+        // CPU operator
+        let restr_c = reed_cpu::elem_restriction::CpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets,
+        )
+        .unwrap();
+        let basis_c = reed_cpu::basis_lagrange::LagrangeBasis::<f32>::new(
+            1, ncomp, p, q, QuadMode::Gauss,
+        )
+        .unwrap();
+        let op_cpu = reed_cpu::operator::OperatorBuilder::new()
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field(
+                "input",
+                Some(&restr_c),
+                Some(&basis_c),
+                reed_cpu::operator::FieldVector::Active,
+            )
+            .field(
+                "output",
+                Some(&restr_c),
+                Some(&basis_c),
+                reed_cpu::operator::FieldVector::Active,
+            )
+            .operator_label("diag-test-cpu")
+            .build()
+            .unwrap();
+
+        let mut diag_wgpu = CpuVector::new(global_dof);
+        let mut diag_cpu = CpuVector::new(global_dof);
+
+        op_wgpu
+            .linear_assemble_diagonal(&mut diag_wgpu)
+            .unwrap();
+        op_cpu
+            .linear_assemble_diagonal(&mut diag_cpu)
+            .unwrap();
+
+        for i in 0..global_dof {
+            let diff = (diag_wgpu.as_slice()[i] - diag_cpu.as_slice()[i]).abs();
+            assert!(
+                diff < 1e-4,
+                "diagonal mismatch at index {}: wgpu={} cpu={} diff={}",
+                i,
+                diag_wgpu.as_slice()[i],
+                diag_cpu.as_slice()[i],
+                diff
+            );
+        }
+    }
+
+    /// Test linear_assemble_add_diagonal accumulates correctly.
+    #[test]
+    fn diagonal_add_assembly_accumulates() {
+        let Some(rt) = gpu_runtime_or_skip() else {
+            return;
+        };
+
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        )
+        .unwrap();
+        let restr2 = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        )
+        .unwrap();
+        let basis =
+            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis2 =
+            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let op = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field(
+                "input",
+                Some(Box::new(restr)),
+                Some(Box::new(basis)),
+                WgpuFieldVector::Active,
+            )
+            .field(
+                "output",
+                Some(Box::new(restr2)),
+                Some(Box::new(basis2)),
+                WgpuFieldVector::Active,
+            )
+            .build()
+            .unwrap();
+
+        // First, get a baseline diagonal
+        let mut diag = CpuVector::new(global_dof);
+        op.linear_assemble_diagonal(&mut diag).unwrap();
+        let first_result: Vec<f32> = diag.as_slice().to_vec();
+
+        // Add again
+        op.linear_assemble_add_diagonal(&mut diag).unwrap();
+
+        for i in 0..global_dof {
+            let expected = 2.0 * first_result[i];
+            let got = diag.as_slice()[i];
+            assert!(
+                (got - expected).abs() < 1e-4,
+                "diagonal add mismatch at {}: got {} expected {}",
+                i,
+                got,
+                expected
+            );
+        }
+    }
+
+    /// FDM element inverse: A^{-1} * (A * x) should recover x.
+    #[test]
+    fn fdm_element_inverse_applies_inverse() {
+        let Some(rt) = gpu_runtime_or_skip() else {
+            return;
+        };
+
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        )
+        .unwrap();
+        let restr2 = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        )
+        .unwrap();
+        let basis =
+            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis2 =
+            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let op = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field(
+                "input",
+                Some(Box::new(restr)),
+                Some(Box::new(basis)),
+                WgpuFieldVector::Active,
+            )
+            .field(
+                "output",
+                Some(Box::new(restr2)),
+                Some(Box::new(basis2)),
+                WgpuFieldVector::Active,
+            )
+            .build()
+            .unwrap();
+
+        let inv = op.operator_create_fdm_element_inverse().unwrap();
+
+        // Apply operator: y = A * x
+        let x = CpuVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+        let mut y = CpuVector::new(global_dof);
+        op.apply(&x, &mut y).unwrap();
+
+        // Apply inverse: inv * y should recover x
+        let mut recovered = CpuVector::new(global_dof);
+        inv.apply(&y, &mut recovered).unwrap();
+
+        for i in 0..global_dof {
+            let diff = (recovered.as_slice()[i] - x.as_slice()[i]).abs();
+            assert!(
+                diff < 1e-3,
+                "FDM inverse recovery mismatch at {}: expected {} got {} diff={}",
+                i,
+                x.as_slice()[i],
+                recovered.as_slice()[i],
+                diff
+            );
+        }
     }
 }
