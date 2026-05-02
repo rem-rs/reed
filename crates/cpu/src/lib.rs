@@ -9,6 +9,7 @@
 //! as little-endian doubles and cast to `T`.
 
 mod assembly_dense;
+pub mod face_quadrature;
 pub mod basis_lagrange;
 pub mod basis_nedelec;
 pub mod basis_rt;
@@ -46,10 +47,10 @@ pub use fdm_inverse::{CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, F
 pub use fdm_tensor::{CpuFdmTensorInverseOperator, FdmOperatorKind};
 pub use gallery::{
     Identity, IdentityScalar, Mass1DBuild, Mass2DBuild, Mass3DBuild, MassApply,
-    MassApplyInterpTimesWeight, Poisson1DApply, Poisson1DBuild, Poisson2DApply, Poisson2DBuild,
-    Poisson3DApply, Poisson3DBuild, Scale, ScaleScalar, Vec2Dot, Vec3Dot, Vector2MassApply,
-    Vector2Poisson1DApply, Vector2Poisson2DApply, Vector3MassApply, Vector3Poisson1DApply,
-    Vector3Poisson2DApply, Vector3Poisson3DApply,
+    MassApplyInterpTimesWeight, NeumannApply, Poisson1DApply, Poisson1DBuild, Poisson2DApply,
+    Poisson2DBuild, Poisson3DApply, Poisson3DBuild, RobinApply, Scale, ScaleScalar, Vec2Dot,
+    Vec3Dot, Vector2MassApply, Vector2Poisson1DApply, Vector2Poisson2DApply, Vector3MassApply,
+    Vector3Poisson1DApply, Vector3Poisson2DApply, Vector3Poisson3DApply,
 };
 pub use operator::{CpuOperator, FieldVector, OperatorBuilder};
 
@@ -253,6 +254,22 @@ pub fn q_function_by_name<T: Scalar>(name: &str) -> ReedResult<Box<dyn QFunction
     }
 }
 
+/// Exterior (boundary) gallery names accepted by [`q_function_by_name_exterior`].
+///
+/// Matches libCEED `CeedQFunctionCreateActiveByName` parity for boundary kernels.
+pub static QFUNCTION_EXTERIOR_GALLERY_NAMES: &[&str] = &["NeumannApply", "RobinApply"];
+
+/// Look up an exterior (boundary) gallery QFunction by name (libCEED `CeedQFunctionCreateActiveByName` parity).
+///
+/// Returns a boxed [`QFunctionTrait<f64>`] for the named exterior kernel.
+pub fn q_function_by_name_exterior(name: &str) -> Option<Box<dyn QFunctionTrait<f64>>> {
+    match name {
+        "NeumannApply" => Some(Box::new(gallery::boundary::NeumannApply::default())),
+        "RobinApply" => Some(Box::new(gallery::boundary::RobinApply::default())),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod gallery_name_tests {
     use super::*;
@@ -290,5 +307,21 @@ mod gallery_name_tests {
     fn gallery_mass_apply_is_interior_category() {
         let qf = q_function_by_name::<f64>("MassApply").unwrap();
         assert_eq!(qf.q_function_category(), QFunctionCategory::Interior);
+    }
+
+    #[test]
+    fn exterior_gallery_names_all_resolve() {
+        for &name in QFUNCTION_EXTERIOR_GALLERY_NAMES {
+            let qf = q_function_by_name_exterior(name).unwrap_or_else(|| {
+                panic!(
+                    "QFUNCTION_EXTERIOR_GALLERY_NAMES contains unresolved {name:?}"
+                )
+            });
+            assert_eq!(
+                qf.q_function_category(),
+                QFunctionCategory::Exterior,
+                "exterior gallery QFunction {name:?} must have Exterior category"
+            );
+        }
     }
 }
