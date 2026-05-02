@@ -1,4 +1,6 @@
 mod basis;
+mod basis_nedelec;
+mod basis_rt;
 mod basis_simplex;
 mod elem_restriction;
 pub mod qfunction_device;
@@ -516,25 +518,33 @@ impl<T: Scalar> Backend<T> for WgpuBackend<T> {
 
     fn create_basis_hcurl_nedelec(
         &self,
-        _topology: ElemTopology,
-        _p: usize,
-        _q: usize,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
         _qmode: QuadMode,
     ) -> ReedResult<Box<dyn BasisTrait<T>>> {
-        Err(ReedError::BackendNotSupported(
-            "Nedelec basis not yet implemented on WGPU".into(),
-        ))
+        Ok(Box::new(crate::basis_nedelec::WgpuNedelecBasis::<T>::new(
+            topology,
+            p,
+            q,
+            self.runtime.clone(),
+        )?))
     }
 
     fn create_basis_hdiv_raviart_thomas(
         &self,
-        _topology: ElemTopology,
-        _p: usize,
-        _q: usize,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
         _qmode: QuadMode,
     ) -> ReedResult<Box<dyn BasisTrait<T>>> {
-        Err(ReedError::BackendNotSupported(
-            "RT basis not yet implemented on WGPU".into(),
+        Ok(Box::new(
+            crate::basis_rt::WgpuRaviartThomasBasis::<T>::new(
+                topology,
+                p,
+                q,
+                self.runtime.clone(),
+            )?,
         ))
     }
 }
@@ -645,26 +655,22 @@ impl<T: Scalar> reed_core::Backend<T> for WgpuBackend<T> {
 
     fn create_basis_hcurl_nedelec(
         &self,
-        _topology: ElemTopology,
-        _p: usize,
-        _q: usize,
-        _qmode: QuadMode,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
     ) -> ReedResult<Box<dyn BasisTrait<T>>> {
-        Err(ReedError::BackendNotSupported(
-            "Nedelec basis not yet implemented on WGPU".into(),
-        ))
+        reed_core::Backend::create_basis_hcurl_nedelec(&self.cpu_backend, topology, p, q, qmode)
     }
 
     fn create_basis_hdiv_raviart_thomas(
         &self,
-        _topology: ElemTopology,
-        _p: usize,
-        _q: usize,
-        _qmode: QuadMode,
+        topology: ElemTopology,
+        p: usize,
+        q: usize,
+        qmode: QuadMode,
     ) -> ReedResult<Box<dyn BasisTrait<T>>> {
-        Err(ReedError::BackendNotSupported(
-            "RT basis not yet implemented on WGPU".into(),
-        ))
+        reed_core::Backend::create_basis_hdiv_raviart_thomas(&self.cpu_backend, topology, p, q, qmode)
     }
 
     fn try_device_q_function_by_name(
