@@ -59,6 +59,23 @@ pub trait Backend<T: Scalar>: Send + Sync {
         strides: [CeedInt; 3],
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>>;
 
+    fn create_face_elem_restriction(
+        &self,
+        _num_faces: usize,
+        _num_dof_per_face: usize,
+        _num_dof_per_elem: usize,
+        _ncomp: usize,
+        _num_global_dof: usize,
+        _face_to_elem: Vec<(usize, usize)>,
+        _face_offsets: &[CeedInt],
+        _elem_offsets: &[CeedInt],
+        _face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "create_face_elem_restriction is not implemented for this backend".into(),
+        ))
+    }
+
     fn create_basis_tensor_h1_lagrange(
         &self,
         dim: usize,
@@ -118,6 +135,23 @@ pub trait Backend<T: Scalar> {
         lsize: usize,
         strides: [CeedInt; 3],
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>>;
+
+    fn create_face_elem_restriction(
+        &self,
+        _num_faces: usize,
+        _num_dof_per_face: usize,
+        _num_dof_per_elem: usize,
+        _ncomp: usize,
+        _num_global_dof: usize,
+        _face_to_elem: Vec<(usize, usize)>,
+        _face_offsets: &[CeedInt],
+        _elem_offsets: &[CeedInt],
+        _face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "create_face_elem_restriction is not implemented for this backend".into(),
+        ))
+    }
 
     fn create_basis_tensor_h1_lagrange(
         &self,
@@ -313,6 +347,32 @@ impl<T: Scalar> reed_core::Backend<T> for WgpuBackend<T> {
         strides: [CeedInt; 3],
     ) -> reed_core::ReedResult<Box<dyn reed_core::ElemRestrictionTrait<T>>> {
         Backend::<T>::create_strided_elem_restriction(self, nelem, elemsize, ncomp, lsize, strides)
+    }
+
+    fn create_face_elem_restriction(
+        &self,
+        num_faces: usize,
+        num_dof_per_face: usize,
+        num_dof_per_elem: usize,
+        ncomp: usize,
+        num_global_dof: usize,
+        face_to_elem: Vec<(usize, usize)>,
+        face_offsets: &[CeedInt],
+        elem_offsets: &[CeedInt],
+        face_to_elem_local: Vec<usize>,
+    ) -> reed_core::ReedResult<Box<dyn reed_core::ElemRestrictionTrait<T>>> {
+        Backend::<T>::create_face_elem_restriction(
+            self,
+            num_faces,
+            num_dof_per_face,
+            num_dof_per_elem,
+            ncomp,
+            num_global_dof,
+            face_to_elem,
+            face_offsets,
+            elem_offsets,
+            face_to_elem_local,
+        )
     }
 
     fn create_basis_tensor_h1_lagrange(
@@ -533,6 +593,23 @@ impl<T: Scalar> reed_core::Backend<T> for WgpuBackend<T> {
                 strides,
                 self.runtime.clone(),
             )?,
+        ))
+    }
+
+    fn create_face_elem_restriction(
+        &self,
+        _num_faces: usize,
+        _num_dof_per_face: usize,
+        _num_dof_per_elem: usize,
+        _ncomp: usize,
+        _num_global_dof: usize,
+        _face_to_elem: Vec<(usize, usize)>,
+        _face_offsets: &[CeedInt],
+        _elem_offsets: &[CeedInt],
+        _face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        Err(ReedError::BackendNotSupported(
+            "create_face_elem_restriction is not implemented for this backend".into(),
         ))
     }
 

@@ -23,10 +23,12 @@ pub use reed_core::{
     ReedError, ReedResult, Scalar, TransposeMode, VectorTrait,
 };
 pub use reed_cpu::{
-    q_function_by_name, CompositeOperator, CompositeOperatorBorrowed, CpuBackend,
-    CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, CpuFdmTensorInverseOperator,
-    CpuOperator, FdmOperatorKind, FieldVector, FDM_DENSE_MAX_N, NedelecBasis, OperatorBuilder,
+    q_function_by_name, q_function_by_name_exterior, CompositeOperator, CompositeOperatorBorrowed,
+    CpuBackend, CpuFaceElemRestriction, CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator,
+    CpuFdmTensorInverseOperator, CpuOperator, FdmOperatorKind, FieldVector, FDM_DENSE_MAX_N,
+    NedelecBasis, NeumannApply, OperatorBuilder, QFUNCTION_EXTERIOR_GALLERY_NAMES,
     QFUNCTION_INTERIOR_GALLERY_NAMES, QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES, RaviartThomasBasis,
+    RobinApply,
 };
 #[cfg(feature = "wgpu-backend")]
 pub use reed_wgpu::{GpuRuntime, WgpuBackend};
@@ -266,6 +268,32 @@ impl<T: Scalar> Reed<T> {
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
         self.inner
             .strided_elem_restriction_ceed_int_strides(nelem, elemsize, ncomp, lsize, strides)
+    }
+
+    /// See [`reed_core::Reed::face_elem_restriction`].
+    pub fn face_elem_restriction(
+        &self,
+        num_faces: usize,
+        num_dof_per_face: usize,
+        num_dof_per_elem: usize,
+        ncomp: usize,
+        num_global_dof: usize,
+        face_to_elem: Vec<(usize, usize)>,
+        face_offsets: &[CeedInt],
+        elem_offsets: &[CeedInt],
+        face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        self.inner.face_elem_restriction(
+            num_faces,
+            num_dof_per_face,
+            num_dof_per_elem,
+            ncomp,
+            num_global_dof,
+            face_to_elem,
+            face_offsets,
+            elem_offsets,
+            face_to_elem_local,
+        )
     }
 
     pub fn basis_tensor_h1_lagrange(

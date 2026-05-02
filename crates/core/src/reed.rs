@@ -66,6 +66,34 @@ pub trait Backend<T: Scalar>: Send + Sync {
         strides: [CeedInt; 3],
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>>;
 
+    fn create_face_elem_restriction(
+        &self,
+        num_faces: usize,
+        num_dof_per_face: usize,
+        num_dof_per_elem: usize,
+        ncomp: usize,
+        num_global_dof: usize,
+        face_to_elem: Vec<(usize, usize)>,
+        face_offsets: &[CeedInt],
+        elem_offsets: &[CeedInt],
+        face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn crate::elem_restriction::ElemRestrictionTrait<T>>> {
+        let _ = (
+            num_faces,
+            num_dof_per_face,
+            num_dof_per_elem,
+            ncomp,
+            num_global_dof,
+            face_to_elem,
+            face_offsets,
+            elem_offsets,
+            face_to_elem_local,
+        );
+        Err(ReedError::BackendNotSupported(
+            "create_face_elem_restriction is not implemented for this backend".into(),
+        ))
+    }
+
     fn create_basis_tensor_h1_lagrange(
         &self,
         dim: usize,
@@ -151,6 +179,34 @@ pub trait Backend<T: Scalar> {
         lsize: usize,
         strides: [CeedInt; 3],
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>>;
+
+    fn create_face_elem_restriction(
+        &self,
+        num_faces: usize,
+        num_dof_per_face: usize,
+        num_dof_per_elem: usize,
+        ncomp: usize,
+        num_global_dof: usize,
+        face_to_elem: Vec<(usize, usize)>,
+        face_offsets: &[CeedInt],
+        elem_offsets: &[CeedInt],
+        face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn crate::elem_restriction::ElemRestrictionTrait<T>>> {
+        let _ = (
+            num_faces,
+            num_dof_per_face,
+            num_dof_per_elem,
+            ncomp,
+            num_global_dof,
+            face_to_elem,
+            face_offsets,
+            elem_offsets,
+            face_to_elem_local,
+        );
+        Err(ReedError::BackendNotSupported(
+            "create_face_elem_restriction is not implemented for this backend".into(),
+        ))
+    }
 
     fn create_basis_tensor_h1_lagrange(
         &self,
@@ -323,6 +379,38 @@ impl<T: Scalar> Reed<T> {
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
         let s = ceed_int_strides_to_i32(strides)?;
         self.strided_elem_restriction(nelem, elemsize, ncomp, lsize, s)
+    }
+
+    // -- Face ElemRestriction factory --
+
+    /// Create a face element restriction that maps boundary faces to their parent elements.
+    ///
+    /// Each "element" from the restriction's perspective is a boundary face.
+    /// [`ElemRestrictionTrait::num_elements`] returns `num_faces` and
+    /// [`ElemRestrictionTrait::num_dof_per_elem`] returns `num_dof_per_face`.
+    pub fn face_elem_restriction(
+        &self,
+        num_faces: usize,
+        num_dof_per_face: usize,
+        num_dof_per_elem: usize,
+        ncomp: usize,
+        num_global_dof: usize,
+        face_to_elem: Vec<(usize, usize)>,
+        face_offsets: &[CeedInt],
+        elem_offsets: &[CeedInt],
+        face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        (**self.backend.lock().unwrap()).create_face_elem_restriction(
+            num_faces,
+            num_dof_per_face,
+            num_dof_per_elem,
+            ncomp,
+            num_global_dof,
+            face_to_elem,
+            face_offsets,
+            elem_offsets,
+            face_to_elem_local,
+        )
     }
 
     // -- Basis factory --

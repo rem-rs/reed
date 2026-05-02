@@ -43,6 +43,7 @@ use reed_core::{
 use vector::CpuVector;
 
 pub use composite_operator::{CompositeOperator, CompositeOperatorBorrowed};
+pub use elem_restriction_face::CpuFaceElemRestriction;
 pub use fdm_inverse::{CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, FDM_DENSE_MAX_N};
 pub use fdm_tensor::{CpuFdmTensorInverseOperator, FdmOperatorKind};
 pub use gallery::{
@@ -105,6 +106,31 @@ impl<T: Scalar> Backend<T> for CpuBackend<T> {
     ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
         Ok(Box::new(CpuElemRestriction::<T>::new_strided(
             nelem, elemsize, ncomp, lsize, strides,
+        )?))
+    }
+
+    fn create_face_elem_restriction(
+        &self,
+        num_faces: usize,
+        num_dof_per_face: usize,
+        num_dof_per_elem: usize,
+        ncomp: usize,
+        num_global_dof: usize,
+        face_to_elem: Vec<(usize, usize)>,
+        face_offsets: &[CeedInt],
+        elem_offsets: &[CeedInt],
+        face_to_elem_local: Vec<usize>,
+    ) -> ReedResult<Box<dyn ElemRestrictionTrait<T>>> {
+        Ok(Box::new(CpuFaceElemRestriction::<T>::new(
+            num_faces,
+            num_dof_per_face,
+            num_dof_per_elem,
+            ncomp,
+            num_global_dof,
+            face_to_elem,
+            face_offsets.to_vec(),
+            elem_offsets.to_vec(),
+            face_to_elem_local,
         )?))
     }
 
