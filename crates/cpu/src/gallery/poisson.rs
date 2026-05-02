@@ -39,6 +39,10 @@ impl Default for Poisson1DBuild {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Poisson1DBuild {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Poisson1DBuild")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -121,6 +125,10 @@ impl Default for Poisson2DBuild {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Poisson2DBuild {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Poisson2DBuild")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -212,6 +220,10 @@ impl Default for Poisson2DApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Poisson2DApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Poisson2DApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -317,6 +329,10 @@ impl Default for Poisson3DBuild {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Poisson3DBuild {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Poisson3DBuild")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -419,6 +435,10 @@ impl Default for Poisson3DApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Poisson3DApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Poisson3DApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -539,6 +559,10 @@ impl Default for Poisson1DApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Poisson1DApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Poisson1DApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }

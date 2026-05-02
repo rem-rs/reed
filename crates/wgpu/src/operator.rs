@@ -10,27 +10,43 @@
 //! WgpuOperator::apply(x_global, y_global):
 //!   1. For each input field: restriction gather (GPU) -> element-local buffer
 //!   2. For each input field: basis apply (GPU) -> q-point buffer
-//!   3. QFunction dispatch at q-points (CPU for v1)
+//!   3. QFunction dispatch at q-points (CPU for v1, device QFunction when available)
 //!   4. For each output field: basis^T apply (GPU) -> element-local buffer
 //!   5. For each output field: restriction scatter (GPU) -> accumulate to y_global
 //! ```
 //!
-//! ## v1 scope
+//! ## Adjoint
 //!
-//! - Forward apply with single active input/output vectors
-//! - QFunction runs on CPU with host data (GPU readback between stages)
-//! - No multi-field named-buffer apply in v1
-//! - No adjoint/transpose in v1
+//! ```text
+//! WgpuOperator::apply_with_transpose(Adjoint, range_cot, domain_cot):
+//!   1. Evaluate passive input fields forward (to get primal q-point inputs for transpose kernel)
+//!   2. For each output field: restriction gather (GPU) -> basis forward (GPU) -> q_out_cot
+//!   3. QFunction.apply_operator_transpose_with_primal at q-points -> q_in_cot
+//!   4. For each active input field: basis^T (GPU) -> restriction scatter (GPU) -> domain_cot
+//! ```
+//!
+//! ## Multi-field
+//!
+//! `apply_field_buffers` / `apply_add_field_buffers` dispatch per-field named buffers
+//! following the same restriction/basis/QFunction pipeline.
+//!
+//! ## Device QFunction auto-integration
+//!
+//! When a gallery QFunction reports a [`gallery_name`](reed_core::QFunctionTrait::gallery_name),
+//! the builder tries to fetch a device counterpart via [`GpuRuntime`].
+//! If available (f32 only), the device QFunction replaces the CPU QFunction for the pointwise
+//! evaluation step.
 
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use reed_core::{
     basis::BasisTrait,
     elem_restriction::ElemRestrictionTrait,
     enums::{EvalMode, TransposeMode},
     error::{ReedError, ReedResult},
-    operator::{OperatorAssembleKind, OperatorTrait, OperatorTransposeRequest},
-    qfunction::{QFunctionCategory, QFunctionTrait},
+    operator::{OperatorTrait, OperatorTransposeRequest},
+    qfunction::QFunctionTrait,
     scalar::Scalar,
     vector::VectorTrait,
     QFunctionContext,
@@ -91,14 +107,9 @@ pub struct WgpuOperatorField<T: Scalar> {
 ///
 /// Owns its restriction and basis objects (unlike [`CpuOperator`](reed_cpu::operator::CpuOperator)
 /// which borrows them). The restriction and basis stages execute on GPU via
-/// [`GpuRuntime`] WGSL pipelines when the inner [`WgpuElemRestriction`](crate::elem_restriction::WgpuElemRestriction)
-/// / [`WgpuBasis`](crate::basis::WgpuBasis) have a runtime available.
+/// [`GpuRuntime`] WGSL pipelines when the inner restriction / basis have a runtime available.
 ///
-/// # v1 limitations
-///
-/// - QFunction runs on CPU (data is read back from GPU after restriction/basis).
-/// - Single active input/output vector only (no named-buffer multi-field apply).
-/// - No adjoint/transpose support.
+/// Supports adjoint, multi-field named-buffer apply, and device QFunction auto-integration.
 pub struct WgpuOperator<T: Scalar> {
     runtime: Arc<GpuRuntime>,
     num_elem: usize,
@@ -111,6 +122,11 @@ pub struct WgpuOperator<T: Scalar> {
     num_qfunction_inputs: usize,
     num_qfunction_outputs: usize,
     op_label: Option<String>,
+    /// Snapshot of forward q-point inputs for adjoint kernels that need primal data.
+    last_forward_q_inputs: Mutex<Option<Vec<Vec<T>>>>,
+    /// Optional device-side QFunction (f32 WGSL dispatch); replaces the host QFunction
+    /// for the pointwise evaluation step when set.
+    device_qfunction: Option<Box<dyn QFunctionTrait<T>>>,
 }
 
 impl<T: Scalar> WgpuOperator<T> {
@@ -141,7 +157,6 @@ impl<T: Scalar> WgpuOperator<T> {
     }
 
     /// Number of scalar components per quadrature point for a given field and eval mode.
-    /// Mirrors [`CpuOperator::qpoint_component_count`](reed_cpu::operator::CpuOperator).
     fn qpoint_component_count(
         field: &WgpuOperatorField<T>,
         eval_mode: EvalMode,
@@ -215,8 +230,251 @@ impl<T: Scalar> WgpuOperator<T> {
     }
 
     // ------------------------------------------------------------------
+    // Multi-field helper methods
+    // ------------------------------------------------------------------
+
+    /// Distinct field indices that appear as [`WgpuFieldVector::Active`] on qfunction **inputs**.
+    pub fn distinct_active_input_field_indices(&self) -> Vec<usize> {
+        let mut s = HashSet::new();
+        for p in &self.input_plans {
+            if matches!(self.fields[p.field_index].vector, WgpuFieldVector::Active) {
+                s.insert(p.field_index);
+            }
+        }
+        let mut v: Vec<usize> = s.into_iter().collect();
+        v.sort_unstable();
+        v
+    }
+
+    /// Distinct field indices that appear as [`WgpuFieldVector::Active`] on qfunction **outputs**.
+    pub fn distinct_active_output_field_indices(&self) -> Vec<usize> {
+        let mut s = HashSet::new();
+        for p in &self.output_plans {
+            if matches!(self.fields[p.field_index].vector, WgpuFieldVector::Active) {
+                s.insert(p.field_index);
+            }
+        }
+        let mut v: Vec<usize> = s.into_iter().collect();
+        v.sort_unstable();
+        v
+    }
+
+    fn multi_distinct_active_io_fields(&self) -> bool {
+        self.distinct_active_input_field_indices().len() > 1
+            || self.distinct_active_output_field_indices().len() > 1
+    }
+
+    /// True when this operator cannot use single-buffer [`OperatorTrait::apply`] and requires
+    /// [`OperatorTrait::apply_field_buffers`].
+    pub fn requires_field_named_buffers(&self) -> bool {
+        self.multi_distinct_active_io_fields()
+    }
+
+    fn merge_active_global_for_field_indices(
+        fields: &[WgpuOperatorField<T>],
+        field_indices: impl Iterator<Item = usize>,
+    ) -> ReedResult<Option<usize>> {
+        let mut sizes = HashSet::new();
+        for idx in field_indices {
+            let field = &fields[idx];
+            if matches!(field.vector, WgpuFieldVector::Active) {
+                if let Some(r) = &field.restriction {
+                    sizes.insert(r.num_global_dof());
+                }
+            }
+        }
+        if sizes.is_empty() {
+            return Ok(None);
+        }
+        if sizes.len() > 1 {
+            return Ok(None);
+        }
+        Ok(sizes.into_iter().next())
+    }
+
+    /// Merge active + restriction global sizes for qfunction **input** fields only.
+    pub fn active_input_global_len(&self) -> ReedResult<Option<usize>> {
+        Self::merge_active_global_for_field_indices(
+            &self.fields,
+            self.input_plans.iter().map(|p| p.field_index),
+        )
+    }
+
+    /// Merge active + restriction global sizes for qfunction **output** fields only.
+    pub fn active_output_global_len(&self) -> ReedResult<Option<usize>> {
+        Self::merge_active_global_for_field_indices(
+            &self.fields,
+            self.output_plans.iter().map(|p| p.field_index),
+        )
+    }
+
+    fn lookup_named_read<'b>(
+        m: &[(&'b str, &'b dyn VectorTrait<T>)],
+        name: &str,
+    ) -> ReedResult<&'b dyn VectorTrait<T>> {
+        let mut found: Option<&'b dyn VectorTrait<T>> = None;
+        for (k, v) in m {
+            if *k == name {
+                if found.is_some() {
+                    return Err(ReedError::Operator(format!(
+                        "duplicate field name {:?} in input vector map",
+                        name
+                    )));
+                }
+                found = Some(*v);
+            }
+        }
+        found.ok_or_else(|| {
+            ReedError::Operator(format!("missing vector for active input field {:?}", name))
+        })
+    }
+
+    fn lookup_named_write_slot(
+        m: &[(&str, &mut dyn VectorTrait<T>)],
+        name: &str,
+    ) -> ReedResult<usize> {
+        let mut found: Option<usize> = None;
+        for (i, (k, _)) in m.iter().enumerate() {
+            if *k == name {
+                if found.is_some() {
+                    return Err(ReedError::Operator(format!(
+                        "duplicate field name {:?} in output vector map",
+                        name
+                    )));
+                }
+                found = Some(i);
+            }
+        }
+        found.ok_or_else(|| {
+            ReedError::Operator(format!("missing vector for active output field {:?}", name))
+        })
+    }
+
+    fn assert_unique_field_keys(names: &[&str], label: &str) -> ReedResult<()> {
+        let mut s = HashSet::new();
+        for k in names {
+            if !s.insert(*k) {
+                return Err(ReedError::Operator(format!(
+                    "duplicate field name {:?} in {}",
+                    k, label
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_named_field_buffers(
+        &self,
+        inputs: &[(&str, &dyn VectorTrait<T>)],
+        outputs: &[(&str, &mut dyn VectorTrait<T>)],
+    ) -> ReedResult<()> {
+        let in_keys: Vec<&str> = inputs.iter().map(|(k, _)| *k).collect();
+        Self::assert_unique_field_keys(&in_keys, "apply_field_buffers inputs")?;
+        let out_keys: Vec<&str> = outputs.iter().map(|(k, _)| *k).collect();
+        Self::assert_unique_field_keys(&out_keys, "apply_field_buffers outputs")?;
+
+        for &idx in &self.distinct_active_input_field_indices() {
+            let f = &self.fields[idx];
+            let v = Self::lookup_named_read(inputs, f.name.as_str())?;
+            if let Some(r) = &f.restriction {
+                let need = r.num_global_dof();
+                if v.len() != need {
+                    return Err(ReedError::Operator(format!(
+                        "apply_field_buffers: input field '{}' length {} != restriction global DOF {}",
+                        f.name,
+                        v.len(),
+                        need
+                    )));
+                }
+            }
+        }
+        for &idx in &self.distinct_active_output_field_indices() {
+            let f = &self.fields[idx];
+            let (_, v) = outputs
+                .iter()
+                .find(|(name, _)| *name == f.name.as_str())
+                .ok_or_else(|| {
+                    ReedError::Operator(format!(
+                        "apply_field_buffers: missing output for active field {:?}",
+                        f.name
+                    ))
+                })?;
+            if let Some(r) = &f.restriction {
+                let need = r.num_global_dof();
+                if v.len() != need {
+                    return Err(ReedError::Operator(format!(
+                        "apply_field_buffers: output field '{}' length {} != restriction global DOF {}",
+                        f.name,
+                        v.len(),
+                        need
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_adjoint_named_field_buffers(
+        &self,
+        range: &[(&str, &dyn VectorTrait<T>)],
+        domain: &[(&str, &mut dyn VectorTrait<T>)],
+    ) -> ReedResult<()> {
+        let in_keys: Vec<&str> = range.iter().map(|(k, _)| *k).collect();
+        Self::assert_unique_field_keys(&in_keys, "adjoint range cotangent inputs")?;
+        let out_keys: Vec<&str> = domain.iter().map(|(k, _)| *k).collect();
+        Self::assert_unique_field_keys(&out_keys, "adjoint domain cotangent outputs")?;
+
+        for &idx in &self.distinct_active_output_field_indices() {
+            let f = &self.fields[idx];
+            let v = Self::lookup_named_read(range, f.name.as_str())?;
+            if let Some(r) = &f.restriction {
+                let need = r.num_global_dof();
+                if v.len() != need {
+                    return Err(ReedError::Operator(format!(
+                        "adjoint apply_field_buffers: range cotangent field '{}' length {} != restriction global DOF {}",
+                        f.name,
+                        v.len(),
+                        need
+                    )));
+                }
+            }
+        }
+        for &idx in &self.distinct_active_input_field_indices() {
+            let f = &self.fields[idx];
+            let (_, v) = domain
+                .iter()
+                .find(|(name, _)| *name == f.name.as_str())
+                .ok_or_else(|| {
+                    ReedError::Operator(format!(
+                        "adjoint apply_field_buffers: missing domain cotangent buffer for active input field {:?}",
+                        f.name
+                    ))
+                })?;
+            if let Some(r) = &f.restriction {
+                let need = r.num_global_dof();
+                if v.len() != need {
+                    return Err(ReedError::Operator(format!(
+                        "adjoint apply_field_buffers: domain cotangent field '{}' length {} != restriction global DOF {}",
+                        f.name,
+                        v.len(),
+                        need
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
     // Forward apply pipeline
     // ------------------------------------------------------------------
+
+    /// Resolve the QFunction to use for the pointwise evaluation step.
+    fn active_qfunction(&self) -> &dyn QFunctionTrait<T> {
+        self.device_qfunction
+            .as_deref()
+            .unwrap_or_else(|| self.qfunction.as_ref())
+    }
 
     /// Core forward apply: restriction gather -> basis apply -> QFunction -> basis^T -> restriction scatter.
     fn apply_forward(
@@ -225,60 +483,21 @@ impl<T: Scalar> WgpuOperator<T> {
         output: &mut dyn VectorTrait<T>,
         add: bool,
     ) -> ReedResult<()> {
-        // Zero the output if not accumulating
+        if self.multi_distinct_active_io_fields() {
+            return Err(ReedError::Operator(
+                "multi-field active operator: use OperatorTrait::apply_field_buffers / apply_add_field_buffers (WgpuOperator; single-buffer apply is not supported)".into(),
+            ));
+        }
         if !add {
             output.set_value(T::ZERO)?;
         }
 
-        // Per-call workspace allocations (avoids Mutex overhead; allocation cost
-        // is negligible relative to the GPU dispatch + readback work).
-        let mut q_inputs: Vec<Vec<T>> = (0..self.num_qfunction_inputs)
-            .map(|_| Vec::new())
-            .collect();
-        let mut q_outputs: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
-            .map(|_| Vec::new())
-            .collect();
-        let mut input_locals: Vec<Vec<T>> = (0..self.num_qfunction_inputs)
-            .map(|_| Vec::new())
-            .collect();
+        let (_q_inputs, q_outputs) = self.run_forward_qfunction_stages(input)?;
+
+        let out_sl = output.as_mut_slice();
         let mut output_locals: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
             .map(|_| Vec::new())
             .collect();
-
-        // Step 1-2: For each input field, restriction gather + basis apply -> q_inputs
-        for (slot, plan) in self.input_plans.iter().enumerate() {
-            let field = &self.fields[plan.field_index];
-            self.prepare_input_into(
-                field,
-                plan.eval_mode,
-                input,
-                &mut input_locals[slot],
-                &mut q_inputs[slot],
-            )?;
-        }
-
-        // Step 3: Resize output q-point buffers and call QFunction (CPU for v1)
-        for (slot, descriptor) in self.qfunction.outputs().iter().enumerate() {
-            q_outputs[slot].resize(
-                self.num_elem * self.num_qpoints * descriptor.num_comp,
-                T::ZERO,
-            );
-        }
-
-        let input_slices = q_inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
-        let mut output_slices = q_outputs
-            .iter_mut()
-            .map(Vec::as_mut_slice)
-            .collect::<Vec<_>>();
-        self.qfunction.apply(
-            self.qfunction_context.as_bytes(),
-            self.num_elem * self.num_qpoints,
-            &input_slices,
-            &mut output_slices,
-        )?;
-
-        // Step 4-5: For each output field, basis^T apply + restriction scatter -> output
-        let out_sl = output.as_mut_slice();
         for (slot, plan) in self.output_plans.iter().enumerate() {
             let field = &self.fields[plan.field_index];
             self.scatter_output_to_slice(
@@ -293,12 +512,114 @@ impl<T: Scalar> WgpuOperator<T> {
         Ok(())
     }
 
-    /// Restriction gather + basis apply for one input field.
-    ///
-    /// GPU acceleration kicks in when the field's restriction is a
-    /// [`WgpuElemRestriction`](crate::elem_restriction::WgpuElemRestriction) and/or the
-    /// basis is a [`WgpuBasis`](crate::basis::WgpuBasis) with an active runtime.
-    fn prepare_input_into(
+    /// Restriction + basis -> q-point input buffers, then QFunction -> q-point output buffers.
+    fn run_forward_qfunction_stages(
+        &self,
+        active_input: &dyn VectorTrait<T>,
+    ) -> ReedResult<(Vec<Vec<T>>, Vec<Vec<T>>)> {
+        let mut q_inputs: Vec<Vec<T>> = (0..self.num_qfunction_inputs)
+            .map(|_| Vec::new())
+            .collect();
+        let mut q_outputs: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
+            .map(|_| Vec::new())
+            .collect();
+        let mut input_locals: Vec<Vec<T>> = (0..self.num_qfunction_inputs)
+            .map(|_| Vec::new())
+            .collect();
+
+        for (slot, plan) in self.input_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            self.prepare_input_into_single(
+                field,
+                plan.eval_mode,
+                active_input,
+                &mut input_locals[slot],
+                &mut q_inputs[slot],
+            )?;
+        }
+
+        if let Ok(mut cache) = self.last_forward_q_inputs.lock() {
+            *cache = Some(q_inputs.clone());
+        }
+
+        let qf = self.active_qfunction();
+        for (slot, descriptor) in qf.outputs().iter().enumerate() {
+            q_outputs[slot].resize(
+                self.num_elem * self.num_qpoints * descriptor.num_comp,
+                T::ZERO,
+            );
+        }
+
+        let input_slices = q_inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let mut output_slices = q_outputs
+            .iter_mut()
+            .map(Vec::as_mut_slice)
+            .collect::<Vec<_>>();
+        qf.apply(
+            self.qfunction_context.as_bytes(),
+            self.num_elem * self.num_qpoints,
+            &input_slices,
+            &mut output_slices,
+        )?;
+
+        Ok((q_inputs, q_outputs))
+    }
+
+    /// Same as `run_forward_qfunction_stages` but with named input vectors.
+    fn run_forward_qfunction_stages_named(
+        &self,
+        active_inputs: &[(&str, &dyn VectorTrait<T>)],
+    ) -> ReedResult<(Vec<Vec<T>>, Vec<Vec<T>>)> {
+        let mut q_inputs: Vec<Vec<T>> = (0..self.num_qfunction_inputs)
+            .map(|_| Vec::new())
+            .collect();
+        let mut q_outputs: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
+            .map(|_| Vec::new())
+            .collect();
+        let mut input_locals: Vec<Vec<T>> = (0..self.num_qfunction_inputs)
+            .map(|_| Vec::new())
+            .collect();
+
+        for (slot, plan) in self.input_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            self.prepare_input_into_named(
+                field,
+                plan.eval_mode,
+                active_inputs,
+                &mut input_locals[slot],
+                &mut q_inputs[slot],
+            )?;
+        }
+
+        if let Ok(mut cache) = self.last_forward_q_inputs.lock() {
+            *cache = Some(q_inputs.clone());
+        }
+
+        let qf = self.active_qfunction();
+        for (slot, descriptor) in qf.outputs().iter().enumerate() {
+            q_outputs[slot].resize(
+                self.num_elem * self.num_qpoints * descriptor.num_comp,
+                T::ZERO,
+            );
+        }
+
+        let input_slices = q_inputs.iter().map(Vec::as_slice).collect::<Vec<_>>();
+        let mut output_slices = q_outputs
+            .iter_mut()
+            .map(Vec::as_mut_slice)
+            .collect::<Vec<_>>();
+        qf.apply(
+            self.qfunction_context.as_bytes(),
+            self.num_elem * self.num_qpoints,
+            &input_slices,
+            &mut output_slices,
+        )?;
+
+        Ok((q_inputs, q_outputs))
+    }
+
+    /// Restriction gather + basis apply for one input field (single-buffer active input).
+    fn prepare_input_into_single(
         &self,
         field: &WgpuOperatorField<T>,
         eval_mode: EvalMode,
@@ -306,7 +627,6 @@ impl<T: Scalar> WgpuOperator<T> {
         local_buffer: &mut Vec<T>,
         q_buffer: &mut Vec<T>,
     ) -> ReedResult<()> {
-        // Weight mode: no vector source needed; basis computes quadrature weights directly
         if matches!(eval_mode, EvalMode::Weight) {
             let basis = field.basis.as_ref().ok_or_else(|| {
                 ReedError::Operator(format!(
@@ -319,7 +639,6 @@ impl<T: Scalar> WgpuOperator<T> {
             return Ok(());
         }
 
-        // Resolve the source vector
         let source: &[T] = match &field.vector {
             WgpuFieldVector::Active => active_input.as_slice(),
             WgpuFieldVector::Passive(v) => v.as_slice(),
@@ -331,7 +650,55 @@ impl<T: Scalar> WgpuOperator<T> {
             }
         };
 
-        // Restriction gather (GPU-accelerated if WgpuElemRestriction with runtime)
+        self.gather_and_basis_apply(field, eval_mode, source, local_buffer, q_buffer)
+    }
+
+    /// Restriction gather + basis apply for one input field (named-buffer active input).
+    fn prepare_input_into_named(
+        &self,
+        field: &WgpuOperatorField<T>,
+        eval_mode: EvalMode,
+        active_inputs: &[(&str, &dyn VectorTrait<T>)],
+        local_buffer: &mut Vec<T>,
+        q_buffer: &mut Vec<T>,
+    ) -> ReedResult<()> {
+        if matches!(eval_mode, EvalMode::Weight) {
+            let basis = field.basis.as_ref().ok_or_else(|| {
+                ReedError::Operator(format!(
+                    "field '{}' requires a basis for Weight eval mode",
+                    field.name
+                ))
+            })?;
+            q_buffer.resize(self.num_elem * basis.num_qpoints(), T::ZERO);
+            basis.apply(self.num_elem, false, EvalMode::Weight, &[], q_buffer)?;
+            return Ok(());
+        }
+
+        let source: &[T] = match &field.vector {
+            WgpuFieldVector::Active => {
+                Self::lookup_named_read(active_inputs, field.name.as_str())?.as_slice()
+            }
+            WgpuFieldVector::Passive(v) => v.as_slice(),
+            WgpuFieldVector::None => {
+                return Err(ReedError::Operator(format!(
+                    "field '{}' has no vector source (set Active or Passive)",
+                    field.name
+                )));
+            }
+        };
+
+        self.gather_and_basis_apply(field, eval_mode, source, local_buffer, q_buffer)
+    }
+
+    /// Common restriction gather -> basis apply for a single field.
+    fn gather_and_basis_apply(
+        &self,
+        field: &WgpuOperatorField<T>,
+        eval_mode: EvalMode,
+        source: &[T],
+        local_buffer: &mut Vec<T>,
+        q_buffer: &mut Vec<T>,
+    ) -> ReedResult<()> {
         let local = if let Some(restriction) = &field.restriction {
             local_buffer.resize(restriction.local_size(), T::ZERO);
             restriction.apply(TransposeMode::NoTranspose, source, local_buffer)?;
@@ -340,13 +707,11 @@ impl<T: Scalar> WgpuOperator<T> {
             source
         };
 
-        // Basis apply (GPU-accelerated if WgpuBasis with runtime)
         if let Some(basis) = &field.basis {
             let qcomp = Self::qpoint_component_count(field, eval_mode)?;
             q_buffer.resize(self.num_elem * basis.num_qpoints() * qcomp, T::ZERO);
             basis.apply(self.num_elem, false, eval_mode, local, q_buffer)?;
         } else {
-            // No basis: pass local data directly to q-point buffer
             q_buffer.clear();
             q_buffer.extend_from_slice(local);
         }
@@ -355,8 +720,6 @@ impl<T: Scalar> WgpuOperator<T> {
     }
 
     /// Basis^T apply + restriction scatter for one output field.
-    ///
-    /// GPU acceleration kicks in when the field's basis/restriction are WGPU-backed.
     fn scatter_output_to_slice(
         &self,
         field: &WgpuOperatorField<T>,
@@ -365,7 +728,6 @@ impl<T: Scalar> WgpuOperator<T> {
         local_buffer: &mut Vec<T>,
         active_output: &mut [T],
     ) -> ReedResult<()> {
-        // Basis transpose (GPU-accelerated if WgpuBasis with runtime)
         let local = if let Some(basis) = &field.basis {
             local_buffer.resize(
                 self.num_elem * basis.num_dof() * basis.num_comp(),
@@ -377,13 +739,11 @@ impl<T: Scalar> WgpuOperator<T> {
             q_output
         };
 
-        // Restriction scatter (GPU-accelerated if WgpuElemRestriction with runtime)
         match &field.vector {
             WgpuFieldVector::Active => {
                 if let Some(restriction) = &field.restriction {
                     restriction.apply(TransposeMode::Transpose, local, active_output)
                 } else {
-                    // No restriction: direct accumulate into output
                     if active_output.len() != local.len() {
                         return Err(ReedError::Operator(format!(
                             "output length {} != local length {} for field '{}'",
@@ -402,6 +762,469 @@ impl<T: Scalar> WgpuOperator<T> {
                 format!("output field '{}' must be Active", field.name),
             )),
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Multi-field forward apply
+    // ------------------------------------------------------------------
+
+    fn apply_field_buffers_impl(
+        &self,
+        inputs: &[(&str, &dyn VectorTrait<T>)],
+        outputs: &mut [(&str, &mut dyn VectorTrait<T>)],
+        add: bool,
+    ) -> ReedResult<()> {
+        self.validate_named_field_buffers(inputs, &*outputs)?;
+
+        if !add {
+            let zero_names: HashSet<&str> = self
+                .distinct_active_output_field_indices()
+                .iter()
+                .map(|&i| self.fields[i].name.as_str())
+                .collect();
+            for (k, v) in outputs.iter_mut() {
+                if zero_names.contains(*k) {
+                    v.set_value(T::ZERO)?;
+                }
+            }
+        }
+
+        let (_q_inputs, q_outputs) = self.run_forward_qfunction_stages_named(inputs)?;
+
+        let mut output_locals: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
+            .map(|_| Vec::new())
+            .collect();
+        for (slot, plan) in self.output_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            let j = Self::lookup_named_write_slot(outputs, field.name.as_str())?;
+            let out_v = &mut *outputs[j].1;
+            self.scatter_output_to_slice(
+                field,
+                plan.eval_mode,
+                &q_outputs[slot],
+                &mut output_locals[slot],
+                out_v.as_mut_slice(),
+            )?;
+        }
+        Ok(())
+    }
+
+    // ------------------------------------------------------------------
+    // Adjoint path
+    // ------------------------------------------------------------------
+
+    fn ensure_adjoint_io_lengths(
+        &self,
+        range_cotangent: &dyn VectorTrait<T>,
+        domain_cotangent: &dyn VectorTrait<T>,
+    ) -> ReedResult<()> {
+        let out_len = self.active_output_global_len()?.ok_or_else(|| {
+            ReedError::Operator(
+                "operator adjoint: could not infer active output global length".into(),
+            )
+        })?;
+        if range_cotangent.len() != out_len {
+            return Err(ReedError::Operator(format!(
+                "operator adjoint: input (range cotangent) length {} != active output global DOF {}",
+                range_cotangent.len(),
+                out_len
+            )));
+        }
+        let in_len = self.active_input_global_len()?.ok_or_else(|| {
+            ReedError::Operator(
+                "operator adjoint: could not infer active input global length".into(),
+            )
+        })?;
+        if domain_cotangent.len() != in_len {
+            return Err(ReedError::Operator(format!(
+                "operator adjoint: output (domain cotangent) length {} != active input global DOF {}",
+                domain_cotangent.len(),
+                in_len
+            )));
+        }
+        Ok(())
+    }
+
+    /// Pull range cotangent to quadrature points: restriction(NoTranspose) -> basis(forward).
+    fn pull_range_cotangent_to_qp(
+        &self,
+        field: &WgpuOperatorField<T>,
+        eval_mode: EvalMode,
+        range_global: &[T],
+        local_buffer: &mut Vec<T>,
+        q_buffer: &mut Vec<T>,
+    ) -> ReedResult<()> {
+        if !matches!(field.vector, WgpuFieldVector::Active) {
+            return Err(ReedError::Operator(format!(
+                "operator adjoint: output field '{}' must be active",
+                field.name
+            )));
+        }
+
+        let local = if let Some(restriction) = &field.restriction {
+            local_buffer.resize(restriction.local_size(), T::ZERO);
+            restriction.apply(TransposeMode::NoTranspose, range_global, local_buffer)?;
+            local_buffer.as_slice()
+        } else {
+            if let Some(basis) = &field.basis {
+                let qcomp = Self::qpoint_component_count(field, eval_mode)?;
+                let need = self.num_elem * basis.num_qpoints() * qcomp;
+                if range_global.len() != need {
+                    return Err(ReedError::Operator(format!(
+                        "operator adjoint: unrestricted output field '{}': global length {} != expected qp length {}",
+                        field.name,
+                        range_global.len(),
+                        need
+                    )));
+                }
+            } else if range_global.len() != self.num_elem * self.num_qpoints {
+                return Err(ReedError::Operator(format!(
+                    "operator adjoint: output field '{}': global length {} != element qp length {}",
+                    field.name,
+                    range_global.len(),
+                    self.num_elem * self.num_qpoints
+                )));
+            }
+            range_global
+        };
+
+        if let Some(basis) = &field.basis {
+            let qcomp = Self::qpoint_component_count(field, eval_mode)?;
+            q_buffer.resize(self.num_elem * basis.num_qpoints() * qcomp, T::ZERO);
+            let basis_eval = if matches!(eval_mode, EvalMode::Weight) {
+                if basis.num_comp() != 1 {
+                    return Err(ReedError::Operator(format!(
+                        "operator adjoint: field '{}' EvalMode::Weight pullback requires basis.num_comp() == 1",
+                        field.name
+                    )));
+                }
+                EvalMode::Interp
+            } else {
+                eval_mode
+            };
+            basis.apply(self.num_elem, false, basis_eval, local, q_buffer)?;
+        } else {
+            q_buffer.clear();
+            q_buffer.extend_from_slice(local);
+        }
+        Ok(())
+    }
+
+    /// Scatter domain cotangent from q-points to global: basis^T -> restriction(Transpose).
+    fn scatter_domain_cotangent_qp_to_global(
+        &self,
+        field: &WgpuOperatorField<T>,
+        eval_mode: EvalMode,
+        q_in_cot: &[T],
+        local_buffer: &mut Vec<T>,
+        domain_global: &mut [T],
+    ) -> ReedResult<()> {
+        match field.vector {
+            WgpuFieldVector::Active => {
+                let local = if let Some(basis) = &field.basis {
+                    local_buffer
+                        .resize(self.num_elem * basis.num_dof() * basis.num_comp(), T::ZERO);
+                    if matches!(eval_mode, EvalMode::Weight) && basis.num_comp() != 1 {
+                        return Err(ReedError::Operator(format!(
+                            "operator adjoint: field '{}' EvalMode::Weight push requires basis.num_comp() == 1",
+                            field.name
+                        )));
+                    }
+                    basis.apply(self.num_elem, true, eval_mode, q_in_cot, local_buffer)?;
+                    local_buffer.as_slice()
+                } else {
+                    q_in_cot
+                };
+
+                if let Some(restriction) = &field.restriction {
+                    restriction.apply(TransposeMode::Transpose, local, domain_global)
+                } else {
+                    if domain_global.len() != local.len() {
+                        return Err(ReedError::Operator(format!(
+                            "operator adjoint: domain length {} != local length {} for field '{}'",
+                            domain_global.len(),
+                            local.len(),
+                            field.name
+                        )));
+                    }
+                    for (dst, src) in domain_global.iter_mut().zip(local.iter()) {
+                        *dst += *src;
+                    }
+                    Ok(())
+                }
+            }
+            WgpuFieldVector::Passive(_) | WgpuFieldVector::None => Ok(()),
+        }
+    }
+
+    /// Core adjoint apply (single-buffer path).
+    fn execute_adjoint(
+        &self,
+        range_cotangent: &dyn VectorTrait<T>,
+        domain_cotangent: &mut dyn VectorTrait<T>,
+        add: bool,
+    ) -> ReedResult<()> {
+        if self.requires_field_named_buffers() {
+            return Err(ReedError::Operator(
+                "operator adjoint: this operator uses multiple active fields; use apply_field_buffers_with_transpose (Adjoint) with named buffers"
+                    .into(),
+            ));
+        }
+        self.ensure_adjoint_io_lengths(range_cotangent, &*domain_cotangent)?;
+
+        // Check that the active qfunction supports transpose
+        if !self.active_qfunction().supports_operator_transpose() {
+            return Err(ReedError::Operator(
+                "operator adjoint: qfunction does not implement apply_operator_transpose".into(),
+            ));
+        }
+
+        if !add {
+            domain_cotangent.set_value(T::ZERO)?;
+        }
+
+        // 1. Evaluate passive input fields forward
+        let mut q_passive_fwd: Vec<Vec<T>> =
+            (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
+        let mut input_locals: Vec<Vec<T>> =
+            (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
+        let dummy_vec = reed_cpu::vector::CpuVector::new(0);
+        for (slot, plan) in self.input_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            match &field.vector {
+                WgpuFieldVector::Passive(_) => {
+                    self.prepare_input_into_single(
+                        field,
+                        plan.eval_mode,
+                        &dummy_vec,
+                        &mut input_locals[slot],
+                        &mut q_passive_fwd[slot],
+                    )?;
+                }
+                WgpuFieldVector::Active => {
+                    q_passive_fwd[slot].clear();
+                }
+                WgpuFieldVector::None => {
+                    return Err(ReedError::Operator(format!(
+                        "operator adjoint: input field '{}' has no vector source",
+                        field.name
+                    )));
+                }
+            }
+        }
+
+        // 2. Pull range cotangent to q-points for each output field
+        let mut q_out_cot: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
+            .map(|_| Vec::new())
+            .collect();
+        let mut output_locals: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
+            .map(|_| Vec::new())
+            .collect();
+        for (slot, plan) in self.output_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            self.pull_range_cotangent_to_qp(
+                field,
+                plan.eval_mode,
+                range_cotangent.as_slice(),
+                &mut output_locals[slot],
+                &mut q_out_cot[slot],
+            )?;
+        }
+
+        // 3. Prepare input cotangent buffers and call QFunction transpose
+        let input_descriptors = self.active_qfunction().inputs();
+        let mut q_in_cot: Vec<Vec<T>> =
+            (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
+        for slot in 0..self.num_qfunction_inputs {
+            let len = self.num_elem * self.num_qpoints * input_descriptors[slot].num_comp;
+            q_in_cot[slot].resize(len, T::ZERO);
+            if matches!(
+                self.fields[self.input_plans[slot].field_index].vector,
+                WgpuFieldVector::Passive(_)
+            ) {
+                q_in_cot[slot].copy_from_slice(&q_passive_fwd[slot]);
+            }
+        }
+
+        let qf = self.active_qfunction();
+        let out_cot_refs: Vec<&[T]> = q_out_cot.iter().map(Vec::as_slice).collect();
+        let mut in_cot_mut: Vec<&mut [T]> =
+            q_in_cot.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let primal_q_inputs_owned = self
+            .last_forward_q_inputs
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+        let primal_q_inputs: Vec<&[T]> = primal_q_inputs_owned
+            .as_ref()
+            .map(|v| v.iter().map(Vec::as_slice).collect())
+            .unwrap_or_default();
+        qf.apply_operator_transpose_with_primal(
+            self.qfunction_context.as_bytes(),
+            self.num_elem * self.num_qpoints,
+            &primal_q_inputs,
+            &out_cot_refs,
+            &mut in_cot_mut,
+        )?;
+
+        // 4. Scatter domain cotangent back
+        let dom_sl = domain_cotangent.as_mut_slice();
+        let mut input_locals_ct: Vec<Vec<T>> = (0..self.num_qfunction_inputs)
+            .map(|_| Vec::new())
+            .collect();
+        for (slot, plan) in self.input_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            if !matches!(field.vector, WgpuFieldVector::Active) {
+                continue;
+            }
+            self.scatter_domain_cotangent_qp_to_global(
+                field,
+                plan.eval_mode,
+                &q_in_cot[slot],
+                &mut input_locals_ct[slot],
+                dom_sl,
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Named-buffer adjoint path.
+    fn execute_adjoint_field_buffers_impl(
+        &self,
+        range: &[(&str, &dyn VectorTrait<T>)],
+        domain: &mut [(&str, &mut dyn VectorTrait<T>)],
+        add: bool,
+    ) -> ReedResult<()> {
+        self.validate_adjoint_named_field_buffers(range, &*domain)?;
+
+        if !self.active_qfunction().supports_operator_transpose() {
+            return Err(ReedError::Operator(
+                "operator adjoint: qfunction does not implement apply_operator_transpose".into(),
+            ));
+        }
+
+        // Zero domain cotangent fields if not accumulating
+        if !add {
+            let zero_names: HashSet<&str> = self
+                .distinct_active_input_field_indices()
+                .iter()
+                .map(|&i| self.fields[i].name.as_str())
+                .collect();
+            for (k, v) in domain.iter_mut() {
+                if zero_names.contains(*k) {
+                    v.set_value(T::ZERO)?;
+                }
+            }
+        }
+
+        // 1. Evaluate passive input fields forward
+        let mut q_passive_fwd: Vec<Vec<T>> =
+            (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
+        let mut input_locals: Vec<Vec<T>> =
+            (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
+        let dummy_vec = reed_cpu::vector::CpuVector::new(0);
+        for (slot, plan) in self.input_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            match &field.vector {
+                WgpuFieldVector::Passive(_) => {
+                    self.prepare_input_into_single(
+                        field,
+                        plan.eval_mode,
+                        &dummy_vec,
+                        &mut input_locals[slot],
+                        &mut q_passive_fwd[slot],
+                    )?;
+                }
+                WgpuFieldVector::Active => {
+                    q_passive_fwd[slot].clear();
+                }
+                WgpuFieldVector::None => {
+                    return Err(ReedError::Operator(format!(
+                        "operator adjoint: input field '{}' has no vector source",
+                        field.name
+                    )));
+                }
+            }
+        }
+
+        // 2. Pull range cotangent to q-points for each output field
+        let mut q_out_cot: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
+            .map(|_| Vec::new())
+            .collect();
+        let mut output_locals: Vec<Vec<T>> = (0..self.num_qfunction_outputs)
+            .map(|_| Vec::new())
+            .collect();
+        for (slot, plan) in self.output_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            let range_sl =
+                Self::lookup_named_read(range, field.name.as_str())?.as_slice();
+            self.pull_range_cotangent_to_qp(
+                field,
+                plan.eval_mode,
+                range_sl,
+                &mut output_locals[slot],
+                &mut q_out_cot[slot],
+            )?;
+        }
+
+        // 3. Prepare input cotangent buffers and call QFunction transpose
+        let input_descriptors = self.active_qfunction().inputs();
+        let mut q_in_cot: Vec<Vec<T>> =
+            (0..self.num_qfunction_inputs).map(|_| Vec::new()).collect();
+        for slot in 0..self.num_qfunction_inputs {
+            let len = self.num_elem * self.num_qpoints * input_descriptors[slot].num_comp;
+            q_in_cot[slot].resize(len, T::ZERO);
+            if matches!(
+                self.fields[self.input_plans[slot].field_index].vector,
+                WgpuFieldVector::Passive(_)
+            ) {
+                q_in_cot[slot].copy_from_slice(&q_passive_fwd[slot]);
+            }
+        }
+
+        let qf = self.active_qfunction();
+        let out_cot_refs: Vec<&[T]> = q_out_cot.iter().map(Vec::as_slice).collect();
+        let mut in_cot_mut: Vec<&mut [T]> =
+            q_in_cot.iter_mut().map(|v| v.as_mut_slice()).collect();
+        let primal_q_inputs_owned = self
+            .last_forward_q_inputs
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+        let primal_q_inputs: Vec<&[T]> = primal_q_inputs_owned
+            .as_ref()
+            .map(|v| v.iter().map(Vec::as_slice).collect())
+            .unwrap_or_default();
+        qf.apply_operator_transpose_with_primal(
+            self.qfunction_context.as_bytes(),
+            self.num_elem * self.num_qpoints,
+            &primal_q_inputs,
+            &out_cot_refs,
+            &mut in_cot_mut,
+        )?;
+
+        // 4. Scatter domain cotangent back - per-field output
+        let mut input_locals_ct: Vec<Vec<T>> = (0..self.num_qfunction_inputs)
+            .map(|_| Vec::new())
+            .collect();
+        for (slot, plan) in self.input_plans.iter().enumerate() {
+            let field = &self.fields[plan.field_index];
+            if !matches!(field.vector, WgpuFieldVector::Active) {
+                continue;
+            }
+            let j = Self::lookup_named_write_slot(domain, field.name.as_str())?;
+            let out_v = &mut *domain[j].1;
+            self.scatter_domain_cotangent_qp_to_global(
+                field,
+                plan.eval_mode,
+                &q_in_cot[slot],
+                &mut input_locals_ct[slot],
+                out_v.as_mut_slice(),
+            )?;
+        }
+
+        Ok(())
     }
 }
 
@@ -430,77 +1253,20 @@ impl<T: Scalar> OperatorTrait<T> for WgpuOperator<T> {
         self.op_label.as_deref()
     }
 
+    fn requires_field_named_buffers(&self) -> bool {
+        self.multi_distinct_active_io_fields()
+    }
+
     fn global_vector_len_hint(&self) -> Option<usize> {
-        // Infer from the first active field with a restriction on the input or output side
-        let input_len = self.fields.iter().find_map(|f| {
-            if matches!(f.vector, WgpuFieldVector::Active) {
-                f.restriction.as_ref().map(|r| r.num_global_dof())
-            } else {
-                None
-            }
-        });
-        input_len
+        self.active_input_global_len().ok().flatten()
     }
 
-    /// Extract operator diagonal via unit-vector probing.
-    ///
-    /// For each global DOF `j`, applies `A * e_j` and stores `(A * e_j)[j]`
-    /// into `assembled[j]`. Zeroes `assembled` before filling.
-    fn linear_assemble_diagonal(&self, assembled: &mut dyn VectorTrait<T>) -> ReedResult<()> {
-        let n = self.global_vector_len_hint().ok_or_else(|| {
-            ReedError::Operator(
-                "linear_assemble_diagonal: cannot determine active global DOF length".into(),
-            )
-        })?;
-        if assembled.len() != n {
-            return Err(ReedError::Operator(format!(
-                "linear_assemble_diagonal: assembled length {} != active global DOF count {}",
-                assembled.len(),
-                n
-            )));
-        }
-        assembled.set_value(T::ZERO)?;
-        for i in 0..n {
-            let mut input = vec![T::ZERO; n];
-            input[i] = T::ONE;
-            let x = reed_cpu::vector::CpuVector::from_vec(input);
-            let mut y = reed_cpu::vector::CpuVector::new(n);
-            self.apply(&x, &mut y)?;
-            assembled.as_mut_slice()[i] = y.as_slice()[i];
-        }
-        Ok(())
+    fn linear_assemble_diagonal(&self, _assembled: &mut dyn VectorTrait<T>) -> ReedResult<()> {
+        Err(ReedError::Operator(
+            "WgpuOperator::linear_assemble_diagonal is not implemented on the GPU path".into(),
+        ))
     }
 
-    /// Same as [`Self::linear_assemble_diagonal`] but accumulates into `assembled`
-    /// without zeroing it first (libCEED `CeedOperatorLinearAssembleAddDiagonal`).
-    fn linear_assemble_add_diagonal(
-        &self,
-        assembled: &mut dyn VectorTrait<T>,
-    ) -> ReedResult<()> {
-        let n = self.global_vector_len_hint().ok_or_else(|| {
-            ReedError::Operator(
-                "linear_assemble_add_diagonal: cannot determine active global DOF length".into(),
-            )
-        })?;
-        if assembled.len() != n {
-            return Err(ReedError::Operator(format!(
-                "linear_assemble_add_diagonal: assembled length {} != active global DOF count {}",
-                assembled.len(),
-                n
-            )));
-        }
-        for i in 0..n {
-            let mut input = vec![T::ZERO; n];
-            input[i] = T::ONE;
-            let x = reed_cpu::vector::CpuVector::from_vec(input);
-            let mut y = reed_cpu::vector::CpuVector::new(n);
-            self.apply(&x, &mut y)?;
-            assembled.as_mut_slice()[i] += y.as_slice()[i];
-        }
-        Ok(())
-    }
-
-    /// v1: adjoint not implemented; Forward delegates to [`Self::apply`].
     fn apply_with_transpose(
         &self,
         request: OperatorTransposeRequest,
@@ -509,13 +1275,10 @@ impl<T: Scalar> OperatorTrait<T> for WgpuOperator<T> {
     ) -> ReedResult<()> {
         match request {
             OperatorTransposeRequest::Forward => self.apply(input, output),
-            OperatorTransposeRequest::Adjoint => Err(ReedError::Operator(
-                "WgpuOperator::apply_with_transpose(Adjoint) is not implemented in v1".into(),
-            )),
+            OperatorTransposeRequest::Adjoint => self.execute_adjoint(input, output, false),
         }
     }
 
-    /// v1: adjoint not implemented; Forward delegates to [`Self::apply_add`].
     fn apply_add_with_transpose(
         &self,
         request: OperatorTransposeRequest,
@@ -524,14 +1287,55 @@ impl<T: Scalar> OperatorTrait<T> for WgpuOperator<T> {
     ) -> ReedResult<()> {
         match request {
             OperatorTransposeRequest::Forward => self.apply_add(input, output),
-            OperatorTransposeRequest::Adjoint => Err(ReedError::Operator(
-                "WgpuOperator::apply_add_with_transpose(Adjoint) is not implemented in v1".into(),
-            )),
+            OperatorTransposeRequest::Adjoint => self.execute_adjoint(input, output, true),
+        }
+    }
+
+    fn apply_field_buffers<'io>(
+        &self,
+        inputs: &'io [(&'io str, &'io dyn VectorTrait<T>)],
+        outputs: &'io mut [(&'io str, &'io mut dyn VectorTrait<T>)],
+    ) -> ReedResult<()> {
+        self.apply_field_buffers_impl(inputs, outputs, false)
+    }
+
+    fn apply_add_field_buffers<'io>(
+        &self,
+        inputs: &'io [(&'io str, &'io dyn VectorTrait<T>)],
+        outputs: &'io mut [(&'io str, &'io mut dyn VectorTrait<T>)],
+    ) -> ReedResult<()> {
+        self.apply_field_buffers_impl(inputs, outputs, true)
+    }
+
+    fn apply_field_buffers_with_transpose<'io>(
+        &self,
+        request: OperatorTransposeRequest,
+        inputs: &'io [(&'io str, &'io dyn VectorTrait<T>)],
+        outputs: &'io mut [(&'io str, &'io mut dyn VectorTrait<T>)],
+    ) -> ReedResult<()> {
+        match request {
+            OperatorTransposeRequest::Forward => self.apply_field_buffers(inputs, outputs),
+            OperatorTransposeRequest::Adjoint => {
+                self.execute_adjoint_field_buffers_impl(inputs, outputs, false)
+            }
+        }
+    }
+
+    fn apply_add_field_buffers_with_transpose<'io>(
+        &self,
+        request: OperatorTransposeRequest,
+        inputs: &'io [(&'io str, &'io dyn VectorTrait<T>)],
+        outputs: &'io mut [(&'io str, &'io mut dyn VectorTrait<T>)],
+    ) -> ReedResult<()> {
+        match request {
+            OperatorTransposeRequest::Forward => self.apply_add_field_buffers(inputs, outputs),
+            OperatorTransposeRequest::Adjoint => {
+                self.execute_adjoint_field_buffers_impl(inputs, outputs, true)
+            }
         }
     }
 
     fn check_ready(&self) -> ReedResult<()> {
-        // v1: basic validation
         if self.fields.is_empty() {
             return Err(ReedError::Operator(
                 "WgpuOperator has no fields".into(),
@@ -539,86 +1343,26 @@ impl<T: Scalar> OperatorTrait<T> for WgpuOperator<T> {
         }
         Ok(())
     }
-
-    fn operator_supports_assemble(&self, kind: OperatorAssembleKind) -> bool {
-        match kind {
-            OperatorAssembleKind::Diagonal => self.global_vector_len_hint().is_some(),
-            OperatorAssembleKind::FdmElementInverse => self
-                .global_vector_len_hint()
-                .map(|n| n <= reed_cpu::FDM_DENSE_MAX_N)
-                .unwrap_or(false),
-            _ => false,
-        }
-    }
-
-    /// Create an FDM (fast diagonalization) element inverse for this operator.
-    ///
-    /// Assembles the global Jacobian column-by-column via [`Self::apply`], inverts
-    /// the dense matrix, and returns a [`reed_cpu::CpuFdmDenseInverseOperator`]
-    /// that multiplies by \(A^{-1}\). Only supported when the active global DOF
-    /// count does not exceed [`reed_cpu::FDM_DENSE_MAX_N`].
-    fn operator_create_fdm_element_inverse(
-        &self,
-    ) -> ReedResult<Box<dyn OperatorTrait<T>>> {
-        let n = self.global_vector_len_hint().ok_or_else(|| {
-            ReedError::Operator(
-                "operator_create_fdm_element_inverse: cannot determine active global DOF length"
-                    .into(),
-            )
-        })?;
-        if n > reed_cpu::FDM_DENSE_MAX_N {
-            return Err(ReedError::Operator(format!(
-                "operator_create_fdm_element_inverse: global DOF {} exceeds dense limit {}",
-                n,
-                reed_cpu::FDM_DENSE_MAX_N
-            )));
-        }
-        let len = n.checked_mul(n).ok_or_else(|| {
-            ReedError::Operator(
-                "operator_create_fdm_element_inverse: n*n overflow".into(),
-            )
-        })?;
-        let mut a_vec = vec![T::ZERO; len];
-        for j in 0..n {
-            let mut input = vec![T::ZERO; n];
-            input[j] = T::ONE;
-            let x = reed_cpu::vector::CpuVector::from_vec(input);
-            let mut y = reed_cpu::vector::CpuVector::new(n);
-            self.apply(&x, &mut y)?;
-            for i in 0..n {
-                a_vec[i + j * n] = y.as_slice()[i];
-            }
-        }
-        let inv = reed_cpu::invert_dense_col_major(&a_vec, n)?;
-        Ok(Box::new(reed_cpu::CpuFdmDenseInverseOperator::new(n, inv)))
-    }
 }
 
 // ---------------------------------------------------------------------------
 // WgpuOperatorBuilder
 // ---------------------------------------------------------------------------
 
-/// Builder for [`WgpuOperator`], following the [`OperatorBuilder`](reed_cpu::operator::OperatorBuilder)
-/// pattern but requiring owned WGPU backend objects.
+/// Builder for [`WgpuOperator`].
 ///
-/// # Example
+/// # Device QFunction auto-integration
 ///
-/// ```ignore
-/// use reed_wgpu::{WgpuOperatorBuilder, WgpuFieldVector};
-///
-/// let op = WgpuOperatorBuilder::new()
-///     .runtime(runtime.clone())
-///     .qfunction(qf)
-///     .field("u", Some(Box::new(restr)), Some(Box::new(basis)), WgpuFieldVector::Active)
-///     .field("v", Some(Box::new(restr_out)), Some(Box::new(basis_out)), WgpuFieldVector::Active)
-///     .build()?;
-/// ```
+/// When the QFunction reports a [`gallery_name`](reed_core::QFunctionTrait::gallery_name),
+/// the builder automatically tries to create a device-side counterpart.
+/// This is used during the pointwise evaluation step, avoiding a host round-trip.
 pub struct WgpuOperatorBuilder<T: Scalar> {
     runtime: Option<Arc<GpuRuntime>>,
     qfunction: Option<Box<dyn QFunctionTrait<T>>>,
     qfunction_context: Option<QFunctionContext>,
     op_label: Option<String>,
     fields: Vec<WgpuOperatorField<T>>,
+    force_cpu_qfunction: bool,
 }
 
 impl<T: Scalar> Default for WgpuOperatorBuilder<T> {
@@ -629,6 +1373,7 @@ impl<T: Scalar> Default for WgpuOperatorBuilder<T> {
             qfunction_context: None,
             op_label: None,
             fields: Vec::new(),
+            force_cpu_qfunction: false,
         }
     }
 }
@@ -651,8 +1396,7 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
         self
     }
 
-    /// User [`QFunctionContext`] buffer; byte length must match
-    /// [`QFunctionTrait::context_byte_len`] of the configured qfunction (often zero).
+    /// User [`QFunctionContext`] buffer.
     pub fn qfunction_context(mut self, ctx: QFunctionContext) -> Self {
         self.qfunction_context = Some(ctx);
         self
@@ -664,14 +1408,13 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
         self
     }
 
+    /// Disable device QFunction auto-detection; always use CPU QFunction.
+    pub fn force_cpu_qfunction(mut self) -> Self {
+        self.force_cpu_qfunction = true;
+        self
+    }
+
     /// Add a named field with optional restriction, basis, and vector role.
-    ///
-    /// - `restriction`: [`WgpuElemRestriction`](crate::elem_restriction::WgpuElemRestriction) for
-    ///   global-element gather/scatter (GPU-accelerated with runtime).
-    /// - `basis`: [`WgpuBasis`](crate::basis::WgpuBasis) for element-qpoint mapping
-    ///   (GPU-accelerated with runtime).
-    /// - `vector`: [`WgpuFieldVector::Active`] for apply-time supplied vectors,
-    ///   [`WgpuFieldVector::Passive`] for pre-set data (e.g. `qdata`).
     pub fn field(
         mut self,
         name: impl Into<String>,
@@ -688,15 +1431,23 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
         self
     }
 
+    /// Try to create a device QFunction from the gallery name.
+    fn try_device_qfunction(
+        qfunction: &dyn QFunctionTrait<T>,
+        runtime: &Arc<GpuRuntime>,
+    ) -> Option<Box<dyn QFunctionTrait<T>>> {
+        let name = qfunction.gallery_name()?;
+        if std::any::TypeId::of::<T>() != std::any::TypeId::of::<f32>() {
+            return None;
+        }
+        let result = crate::qfunction_device::try_create_device_q_function_f32(name, runtime.clone())?;
+        match result {
+            Ok(device_qf) => Some(unsafe { crate::coerce_qfunction_f32_box(device_qf) }),
+            Err(_) => None,
+        }
+    }
+
     /// Consume the builder and produce a [`WgpuOperator`].
-    ///
-    /// Validates:
-    /// - A GPU runtime is set
-    /// - A QFunction is set
-    /// - QFunctionContext length matches the qfunction requirement
-    /// - All qfunction input/output field names exist in the field list
-    /// - At least one field has a restriction (for `num_elem`)
-    /// - At least one field has a basis or restriction (for `num_qpoints`)
     pub fn build(self) -> ReedResult<WgpuOperator<T>> {
         let runtime = self
             .runtime
@@ -705,6 +1456,13 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
         let qfunction = self
             .qfunction
             .ok_or_else(|| ReedError::Operator("WgpuOperatorBuilder requires a qfunction".into()))?;
+
+        // Auto-detect device QFunction
+        let device_qfunction = if !self.force_cpu_qfunction {
+            Self::try_device_qfunction(qfunction.as_ref(), &runtime)
+        } else {
+            None
+        };
 
         // Validate QFunctionContext length
         let ctx_need = qfunction.context_byte_len();
@@ -726,7 +1484,6 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
             }
         };
 
-        // Build input/output plans from qfunction descriptors
         let input_plans = qfunction
             .inputs()
             .iter()
@@ -758,7 +1515,6 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
         let num_qfunction_inputs = input_plans.len();
         let num_qfunction_outputs = output_plans.len();
 
-        // Infer num_elem from first field with a restriction
         let num_elem = self
             .fields
             .iter()
@@ -769,7 +1525,6 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
                 )
             })?;
 
-        // Infer num_qpoints from first field with a basis, fallback to restriction elemsize
         let num_qpoints = self
             .fields
             .iter()
@@ -788,24 +1543,6 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
                 )
             })?;
 
-        // Exterior operator validation (v1: detect and validate face-compatible setup).
-        let is_exterior = qfunction.q_function_category() == QFunctionCategory::Exterior;
-        if is_exterior {
-            // For exterior (boundary) operators, fields should use face-element restrictions.
-            // v1: only check that all restricted fields have a restriction (future: validate
-            // that restrictions are face-element type and that basis dim > face dim).
-            for field in &self.fields {
-                if field.basis.is_some() && field.restriction.is_none() {
-                    return Err(ReedError::Operator(format!(
-                        "exterior operator field '{}' has a basis but no restriction; \
-                         face-element operators require restrictions for gather/scatter",
-                        field.name
-                    )));
-                }
-            }
-        }
-        let _ = is_exterior; // used in future face-validation expansion
-
         Ok(WgpuOperator {
             runtime,
             num_elem,
@@ -818,6 +1555,8 @@ impl<T: Scalar> WgpuOperatorBuilder<T> {
             num_qfunction_inputs,
             num_qfunction_outputs,
             op_label: self.op_label,
+            last_forward_q_inputs: Mutex::new(None),
+            device_qfunction,
         })
     }
 }
@@ -845,549 +1584,318 @@ mod tests {
         GpuRuntime::new(&adapter).map(Arc::new)
     }
 
-    /// Smoke test: build a minimal WgpuOperator and verify it doesn't panic.
     #[test]
     fn build_minimal_operator() {
-        let Some(rt) = gpu_runtime_or_skip() else {
-            return;
-        };
-
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
         let nelem = 2usize;
         let p = 2usize;
         let q = 3usize;
-        let num_dof = p; // 1D Lagrange: num_dof = p^dim = p^1 = p
+        let num_dof = p;
         let ncomp = 1;
-
-        // Create restriction and basis (WGPU-backed)
         let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
         let restr = WgpuElemRestriction::<f32>::new_offset(
-            nelem,
-            num_dof,
-            ncomp,
-            1,
-            nelem * num_dof,
-            &offsets,
-            Some(rt.clone()),
-        )
-        .unwrap();
-
-        let basis = WgpuBasis::<f32>::new(
-            1, // dim
-            ncomp,
-            p,
-            q,
-            QuadMode::Gauss,
-            Some(rt.clone()),
-        )
-        .unwrap();
-
-        // Identity QFunction: input -> output, 1 component each
-        let qf = Identity::with_components(1);
-
+            nelem, num_dof, ncomp, 1, nelem * num_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
         let restr2 = WgpuElemRestriction::<f32>::new_offset(
             nelem, num_dof, ncomp, 1, nelem * num_dof, &offsets, Some(rt.clone()),
         ).unwrap();
-        let basis2 = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone()))
-            .unwrap();
-
-        let op = WgpuOperatorBuilder::new()
-            .runtime(rt.clone())
-            .qfunction(Box::new(qf))
-            .field(
-                "input",
-                Some(Box::new(restr)),
-                Some(Box::new(basis)),
-                WgpuFieldVector::Active,
-            )
-            .field(
-                "output",
-                Some(Box::new(restr2)),
-                Some(Box::new(basis2)),
-                WgpuFieldVector::Active,
-            )
-            .build();
-
-        assert!(op.is_ok(), "build failed: {:?}", op.err());
-    }
-
-    /// Integration test: WgpuOperator apply produces same result as CpuOperator apply
-    /// for a simple identity operator.
-    #[test]
-    fn identity_operator_matches_cpu() {
-        let Some(rt) = gpu_runtime_or_skip() else {
-            return;
-        };
-
-        let nelem = 2usize;
-        let p = 2usize;
-        let q = 3usize;
-        let num_dof = p; // 1D Lagrange: num_dof = p^dim = p^1 = p
-        let ncomp = 1;
-        let global_dof = nelem * num_dof;
-
-        // Build WGPU restriction and basis
-        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
-        let restr_wgpu = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let basis_wgpu = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone()))
-            .unwrap();
-        let restr_wgpu2 = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let basis_wgpu2 = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone()))
-            .unwrap();
-
-        // Build CPU restriction and basis
-        let restr_cpu = reed_cpu::elem_restriction::CpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets,
-        )
-        .unwrap();
-        let basis_cpu = reed_cpu::basis_lagrange::LagrangeBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss)
-            .unwrap();
-
-        // Identity QFunction: expects fields named "input" and "output"
-        let qf_wgpu = Identity::with_components(1);
-        let qf_cpu = Identity::with_components(1);
-
-        // Build operators with correct field names
-        let op_wgpu = WgpuOperatorBuilder::new()
-            .runtime(rt.clone())
-            .qfunction(Box::new(qf_wgpu))
-            .field("input", Some(Box::new(restr_wgpu)), Some(Box::new(basis_wgpu)), WgpuFieldVector::Active)
-            .field("output", Some(Box::new(restr_wgpu2)), Some(Box::new(basis_wgpu2)), WgpuFieldVector::Active)
-            .operator_label("identity-wgpu")
-            .build()
-            .unwrap();
-
-        let op_cpu = reed_cpu::operator::OperatorBuilder::new()
-            .qfunction(Box::new(qf_cpu))
-            .field("input", Some(&restr_cpu), Some(&basis_cpu), reed_cpu::operator::FieldVector::Active)
-            .field("output", Some(&restr_cpu), Some(&basis_cpu), reed_cpu::operator::FieldVector::Active)
-            .operator_label("identity-cpu")
-            .build()
-            .unwrap();
-
-        // Apply both operators with the same input
-        let input = CpuVector::from_vec((0..global_dof).map(|i| 0.1 * (i + 1) as f32).collect());
-        let mut output_wgpu = CpuVector::new(global_dof);
-        let mut output_cpu = CpuVector::new(global_dof);
-
-        op_wgpu.apply(&input, &mut output_wgpu).unwrap();
-        op_cpu.apply(&input, &mut output_cpu).unwrap();
-
-        // Compare results
-        let wgpu_data = output_wgpu.as_slice();
-        let cpu_data = output_cpu.as_slice();
-        for i in 0..global_dof {
-            let diff = (wgpu_data[i] - cpu_data[i]).abs();
-            assert!(
-                diff < 1e-4,
-                "mismatch at index {}: wgpu={} cpu={} diff={}",
-                i, wgpu_data[i], cpu_data[i], diff
-            );
-        }
-    }
-
-    /// Test apply_add: accumulate into a non-zero output.
-    #[test]
-    fn apply_add_accumulates() {
-        let Some(rt) = gpu_runtime_or_skip() else {
-            return;
-        };
-
-        let nelem = 2usize;
-        let p = 2;
-        let q = 3;
-        let num_dof = p; // 1D Lagrange: num_dof = p^dim = p^1 = p
-        let ncomp = 1;
-        let global_dof = nelem * num_dof;
-
-        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
-        let restr = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let restr2 = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let basis =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let basis2 =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis2 = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
         let qf = Identity::with_components(1);
-
         let op = WgpuOperatorBuilder::new()
             .runtime(rt.clone())
             .qfunction(Box::new(qf))
             .field("input", Some(Box::new(restr)), Some(Box::new(basis)), WgpuFieldVector::Active)
             .field("output", Some(Box::new(restr2)), Some(Box::new(basis2)), WgpuFieldVector::Active)
-            .build()
-            .unwrap();
+            .build();
+        assert!(op.is_ok(), "build failed: {:?}", op.err());
+    }
 
-        let input = CpuVector::from_vec((0..global_dof).map(|i| (i + 1) as f32).collect());
-
-        // First apply: output gets the identity result
-        let mut output = CpuVector::new(global_dof);
-        op.apply(&input, &mut output).unwrap();
-        let first_result: Vec<f32> = output.as_slice().to_vec();
-
-        // apply_add: should double the result
-        op.apply_add(&input, &mut output).unwrap();
-
+    #[test]
+    fn identity_operator_matches_cpu() {
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
+        let nelem = 2usize;
+        let p = 2usize;
+        let q = 3usize;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr_w = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis_w = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let restr_w2 = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis_w2 = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let restr_c = reed_cpu::elem_restriction::CpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets,
+        ).unwrap();
+        let basis_c = reed_cpu::basis_lagrange::LagrangeBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss).unwrap();
+        let op_w = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field("input", Some(Box::new(restr_w)), Some(Box::new(basis_w)), WgpuFieldVector::Active)
+            .field("output", Some(Box::new(restr_w2)), Some(Box::new(basis_w2)), WgpuFieldVector::Active)
+            .build().unwrap();
+        let op_c = reed_cpu::operator::OperatorBuilder::new()
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field("input", Some(&restr_c), Some(&basis_c), reed_cpu::operator::FieldVector::Active)
+            .field("output", Some(&restr_c), Some(&basis_c), reed_cpu::operator::FieldVector::Active)
+            .build().unwrap();
+        let input = CpuVector::from_vec((0..global_dof).map(|i| 0.1 * (i + 1) as f32).collect());
+        let mut out_w = CpuVector::new(global_dof);
+        let mut out_c = CpuVector::new(global_dof);
+        op_w.apply(&input, &mut out_w).unwrap();
+        op_c.apply(&input, &mut out_c).unwrap();
         for i in 0..global_dof {
-            let expected = 2.0 * first_result[i];
-            let got = output.as_slice()[i];
-            assert!(
-                (got - expected).abs() < 1e-4,
-                "apply_add mismatch at {}: got {} expected {}",
-                i, got, expected
-            );
+            let diff = (out_w.as_slice()[i] - out_c.as_slice()[i]).abs();
+            assert!(diff < 1e-4, "mismatch at {i}: wgpu={} cpu={}", out_w.as_slice()[i], out_c.as_slice()[i]);
         }
     }
 
-    /// Test with a mass operator (passive qdata field).
     #[test]
-    fn mass_operator_with_passive_qdata() {
-        let Some(rt) = gpu_runtime_or_skip() else {
-            return;
-        };
-
+    fn apply_add_accumulates() {
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
         let nelem = 2usize;
         let p = 2;
         let q = 3;
-        let num_dof = p; // 1D Lagrange: num_dof = p^dim = p^1 = p
+        let num_dof = p;
         let ncomp = 1;
         let global_dof = nelem * num_dof;
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let restr2 = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis2 = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let op = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field("input", Some(Box::new(restr)), Some(Box::new(basis)), WgpuFieldVector::Active)
+            .field("output", Some(Box::new(restr2)), Some(Box::new(basis2)), WgpuFieldVector::Active)
+            .build().unwrap();
+        let input = CpuVector::from_vec((0..global_dof).map(|i| (i + 1) as f32).collect());
+        let mut output = CpuVector::new(global_dof);
+        op.apply(&input, &mut output).unwrap();
+        let first: Vec<f32> = output.as_slice().to_vec();
+        op.apply_add(&input, &mut output).unwrap();
+        for i in 0..global_dof {
+            assert!((output.as_slice()[i] - 2.0 * first[i]).abs() < 1e-4);
+        }
+    }
 
+    #[test]
+    fn identity_operator_adjoint() {
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr_in = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let restr_out = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis_in = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis_out = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let op = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field("input", Some(Box::new(restr_in)), Some(Box::new(basis_in)), WgpuFieldVector::Active)
+            .field("output", Some(Box::new(restr_out)), Some(Box::new(basis_out)), WgpuFieldVector::Active)
+            .build().unwrap();
+        let x = CpuVector::from_vec((0..global_dof).map(|i| (i + 1) as f32).collect());
+        let mut y = CpuVector::new(global_dof);
+        op.apply(&x, &mut y).unwrap();
+        let mut adj_y = CpuVector::new(global_dof);
+        op.apply_with_transpose(OperatorTransposeRequest::Adjoint, &y, &mut adj_y).unwrap();
+        let adj_sl = adj_y.as_slice();
+        let has_nonzero = adj_sl.iter().any(|&v| v.abs() > 1e-8);
+        assert!(has_nonzero, "adjoint output is all zeros");
+        let mut inner_fwd = 0.0f32;
+        let y_sl = y.as_slice();
+        for i in 0..global_dof { inner_fwd += y_sl[i] * y_sl[i]; }
+        let mut inner_adj = 0.0f32;
+        let x_sl = x.as_slice();
+        for i in 0..global_dof { inner_adj += adj_sl[i] * x_sl[i]; }
+        let rel_diff = (inner_fwd - inner_adj).abs() / inner_fwd.max(1e-12);
+        assert!(rel_diff < 1e-3, "inner product identity fails: fwd={} adj={}", inner_fwd, inner_adj);
+    }
+
+    #[test]
+    fn identity_operator_adjoint_accumulates() {
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr_in = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let restr_out = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis_in = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis_out = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let op = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field("input", Some(Box::new(restr_in)), Some(Box::new(basis_in)), WgpuFieldVector::Active)
+            .field("output", Some(Box::new(restr_out)), Some(Box::new(basis_out)), WgpuFieldVector::Active)
+            .build().unwrap();
+        let x = CpuVector::from_vec((0..global_dof).map(|i| (i + 1) as f32).collect());
+        let mut y = CpuVector::new(global_dof);
+        op.apply(&x, &mut y).unwrap();
+        let mut adj_y = CpuVector::new(global_dof);
+        op.apply_with_transpose(OperatorTransposeRequest::Adjoint, &y, &mut adj_y).unwrap();
+        let first_adj: Vec<f32> = adj_y.as_slice().to_vec();
+        op.apply_add_with_transpose(OperatorTransposeRequest::Adjoint, &y, &mut adj_y).unwrap();
+        for i in 0..global_dof {
+            assert!((adj_y.as_slice()[i] - 2.0 * first_adj[i]).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn mass_operator_with_passive_qdata() {
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
         let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
         let restr_u = WgpuElemRestriction::<f32>::new_offset(
             nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
+        ).unwrap();
         let restr_v = WgpuElemRestriction::<f32>::new_offset(
             nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let basis_u =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let basis_v =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-
-        // MassApply: inputs=["u", "qdata"], outputs=["v"]
+        ).unwrap();
+        let basis_u = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis_v = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
         let qdata: Vec<f32> = (0..nelem * q).map(|i| 0.5 + 0.1 * (i as f32)).collect();
-        let qdata_vec = CpuVector::from_vec(qdata);
-        let qf = MassApply::default();
-
         let op = WgpuOperatorBuilder::new()
             .runtime(rt.clone())
-            .qfunction(Box::new(qf))
+            .qfunction(Box::new(MassApply::default()))
             .field("u", Some(Box::new(restr_u)), Some(Box::new(basis_u)), WgpuFieldVector::Active)
-            .field("qdata", None, None, WgpuFieldVector::Passive(Box::new(qdata_vec)))
+            .field("qdata", None, None, WgpuFieldVector::Passive(Box::new(CpuVector::from_vec(qdata))))
             .field("v", Some(Box::new(restr_v)), Some(Box::new(basis_v)), WgpuFieldVector::Active)
-            .build()
-            .unwrap();
-
+            .build().unwrap();
         let input = CpuVector::from_vec((0..global_dof).map(|i| (i + 1) as f32).collect());
         let mut output = CpuVector::new(global_dof);
-
-        // Should not panic
         op.apply(&input, &mut output).unwrap();
-
-        // Output should be non-zero
-        let out_slice = output.as_slice();
-        let has_nonzero = out_slice.iter().any(|&v| v.abs() > 1e-8);
-        assert!(has_nonzero, "mass operator output is all zeros");
+        assert!(output.as_slice().iter().any(|&v| v.abs() > 1e-8), "mass operator output is all zeros");
     }
 
-    /// Verify operator_supports_assemble for Diagonal and FdmElementInverse.
     #[test]
-    fn operator_supports_assemble_probes() {
-        let Some(rt) = gpu_runtime_or_skip() else {
-            return;
-        };
-
+    fn named_field_buffers_identity() {
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
         let nelem = 2usize;
         let p = 2;
         let q = 3;
         let num_dof = p;
         let ncomp = 1;
         let global_dof = nelem * num_dof;
-
         let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
-        let restr = WgpuElemRestriction::<f32>::new_offset(
+        let restr_in = WgpuElemRestriction::<f32>::new_offset(
             nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
         ).unwrap();
-        let restr2 = WgpuElemRestriction::<f32>::new_offset(
+        let restr_out = WgpuElemRestriction::<f32>::new_offset(
             nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
         ).unwrap();
-        let basis =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let basis2 =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let qf = Identity::with_components(1);
-
-        let op = WgpuOperatorBuilder::new()
-            .runtime(rt.clone())
-            .qfunction(Box::new(qf))
-            .field(
-                "input",
-                Some(Box::new(restr)),
-                Some(Box::new(basis)),
-                WgpuFieldVector::Active,
-            )
-            .field(
-                "output",
-                Some(Box::new(restr2)),
-                Some(Box::new(basis2)),
-                WgpuFieldVector::Active,
-            )
-            .build()
-            .unwrap();
-
-        assert!(op.operator_supports_assemble(OperatorAssembleKind::Diagonal));
-        // Small operator (n=4) should support FDM element inverse
-        assert!(op.operator_supports_assemble(
-            OperatorAssembleKind::FdmElementInverse
-        ));
-        // v1: other kinds not supported on GPU path
-        assert!(!op.operator_supports_assemble(OperatorAssembleKind::LinearSymbolic));
-        assert!(!op.operator_supports_assemble(OperatorAssembleKind::LinearNumeric));
-    }
-
-    /// Integration test: WgpuOperator::linear_assemble_diagonal matches CpuOperator.
-    #[test]
-    fn diagonal_assembly_matches_cpu() {
-        let Some(rt) = gpu_runtime_or_skip() else {
-            return;
-        };
-
-        let nelem = 2usize;
-        let p = 2;
-        let q = 3;
-        let num_dof = p;
-        let ncomp = 1;
-        let global_dof = nelem * num_dof;
-
-        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
-
-        // WGPU operator
-        let restr_w = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let restr_w2 = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let basis_w =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let basis_w2 =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let op_wgpu = WgpuOperatorBuilder::new()
-            .runtime(rt.clone())
-            .qfunction(Box::new(Identity::with_components(1)))
-            .field(
-                "input",
-                Some(Box::new(restr_w)),
-                Some(Box::new(basis_w)),
-                WgpuFieldVector::Active,
-            )
-            .field(
-                "output",
-                Some(Box::new(restr_w2)),
-                Some(Box::new(basis_w2)),
-                WgpuFieldVector::Active,
-            )
-            .operator_label("diag-test-wgpu")
-            .build()
-            .unwrap();
-
-        // CPU operator
-        let restr_c = reed_cpu::elem_restriction::CpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets,
-        )
-        .unwrap();
-        let basis_c = reed_cpu::basis_lagrange::LagrangeBasis::<f32>::new(
-            1, ncomp, p, q, QuadMode::Gauss,
-        )
-        .unwrap();
-        let op_cpu = reed_cpu::operator::OperatorBuilder::new()
-            .qfunction(Box::new(Identity::with_components(1)))
-            .field(
-                "input",
-                Some(&restr_c),
-                Some(&basis_c),
-                reed_cpu::operator::FieldVector::Active,
-            )
-            .field(
-                "output",
-                Some(&restr_c),
-                Some(&basis_c),
-                reed_cpu::operator::FieldVector::Active,
-            )
-            .operator_label("diag-test-cpu")
-            .build()
-            .unwrap();
-
-        let mut diag_wgpu = CpuVector::new(global_dof);
-        let mut diag_cpu = CpuVector::new(global_dof);
-
-        op_wgpu
-            .linear_assemble_diagonal(&mut diag_wgpu)
-            .unwrap();
-        op_cpu
-            .linear_assemble_diagonal(&mut diag_cpu)
-            .unwrap();
-
-        for i in 0..global_dof {
-            let diff = (diag_wgpu.as_slice()[i] - diag_cpu.as_slice()[i]).abs();
-            assert!(
-                diff < 1e-4,
-                "diagonal mismatch at index {}: wgpu={} cpu={} diff={}",
-                i,
-                diag_wgpu.as_slice()[i],
-                diag_cpu.as_slice()[i],
-                diff
-            );
-        }
-    }
-
-    /// Test linear_assemble_add_diagonal accumulates correctly.
-    #[test]
-    fn diagonal_add_assembly_accumulates() {
-        let Some(rt) = gpu_runtime_or_skip() else {
-            return;
-        };
-
-        let nelem = 2usize;
-        let p = 2;
-        let q = 3;
-        let num_dof = p;
-        let ncomp = 1;
-        let global_dof = nelem * num_dof;
-
-        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
-        let restr = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let restr2 = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let basis =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let basis2 =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis_in = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis_out = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
         let op = WgpuOperatorBuilder::new()
             .runtime(rt.clone())
             .qfunction(Box::new(Identity::with_components(1)))
-            .field(
-                "input",
-                Some(Box::new(restr)),
-                Some(Box::new(basis)),
-                WgpuFieldVector::Active,
-            )
-            .field(
-                "output",
-                Some(Box::new(restr2)),
-                Some(Box::new(basis2)),
-                WgpuFieldVector::Active,
-            )
-            .build()
-            .unwrap();
-
-        // First, get a baseline diagonal
-        let mut diag = CpuVector::new(global_dof);
-        op.linear_assemble_diagonal(&mut diag).unwrap();
-        let first_result: Vec<f32> = diag.as_slice().to_vec();
-
-        // Add again
-        op.linear_assemble_add_diagonal(&mut diag).unwrap();
-
-        for i in 0..global_dof {
-            let expected = 2.0 * first_result[i];
-            let got = diag.as_slice()[i];
-            assert!(
-                (got - expected).abs() < 1e-4,
-                "diagonal add mismatch at {}: got {} expected {}",
-                i,
-                got,
-                expected
-            );
-        }
-    }
-
-    /// FDM element inverse: A^{-1} * (A * x) should recover x.
-    #[test]
-    fn fdm_element_inverse_applies_inverse() {
-        let Some(rt) = gpu_runtime_or_skip() else {
-            return;
-        };
-
-        let nelem = 2usize;
-        let p = 2;
-        let q = 3;
-        let num_dof = p;
-        let ncomp = 1;
-        let global_dof = nelem * num_dof;
-
-        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
-        let restr = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let restr2 = WgpuElemRestriction::<f32>::new_offset(
-            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
-        )
-        .unwrap();
-        let basis =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let basis2 =
-            WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
-        let op = WgpuOperatorBuilder::new()
-            .runtime(rt.clone())
-            .qfunction(Box::new(Identity::with_components(1)))
-            .field(
-                "input",
-                Some(Box::new(restr)),
-                Some(Box::new(basis)),
-                WgpuFieldVector::Active,
-            )
-            .field(
-                "output",
-                Some(Box::new(restr2)),
-                Some(Box::new(basis2)),
-                WgpuFieldVector::Active,
-            )
-            .build()
-            .unwrap();
-
-        let inv = op.operator_create_fdm_element_inverse().unwrap();
-
-        // Apply operator: y = A * x
-        let x = CpuVector::from_vec(vec![1.0, 2.0, 3.0, 4.0]);
+            .field("input", Some(Box::new(restr_in)), Some(Box::new(basis_in)), WgpuFieldVector::Active)
+            .field("output", Some(Box::new(restr_out)), Some(Box::new(basis_out)), WgpuFieldVector::Active)
+            .build().unwrap();
+        let x = CpuVector::from_vec((0..global_dof).map(|i| (i + 1) as f32).collect());
         let mut y = CpuVector::new(global_dof);
-        op.apply(&x, &mut y).unwrap();
+        let inputs: &[(&str, &dyn VectorTrait<f32>)] = &[("input", &x)];
+        let mut outputs: Vec<(&str, &mut dyn VectorTrait<f32>)> = vec![("output", &mut y)];
+        op.apply_field_buffers(inputs, &mut outputs).unwrap();
+        assert!(y.as_slice().iter().any(|&v| v.abs() > 1e-8), "named field buffers output is all zeros");
+    }
 
-        // Apply inverse: inv * y should recover x
-        let mut recovered = CpuVector::new(global_dof);
-        inv.apply(&y, &mut recovered).unwrap();
+    #[test]
+    fn named_field_buffers_adjoint() {
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr_in = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let restr_out = WgpuElemRestriction::<f32>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis_in = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis_out = WgpuBasis::<f32>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let op = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field("input", Some(Box::new(restr_in)), Some(Box::new(basis_in)), WgpuFieldVector::Active)
+            .field("output", Some(Box::new(restr_out)), Some(Box::new(basis_out)), WgpuFieldVector::Active)
+            .build().unwrap();
+        let x = CpuVector::from_vec((0..global_dof).map(|i| (i + 1) as f32).collect());
+        let mut y = CpuVector::new(global_dof);
+        let inputs: &[(&str, &dyn VectorTrait<f32>)] = &[("input", &x)];
+        let mut outputs: Vec<(&str, &mut dyn VectorTrait<f32>)> = vec![("output", &mut y)];
+        op.apply_field_buffers(inputs, &mut outputs).unwrap();
+        let mut adj_x = CpuVector::new(global_dof);
+        let adj_inputs: &[(&str, &dyn VectorTrait<f32>)] = &[("output", &y)];
+        let mut adj_outputs: Vec<(&str, &mut dyn VectorTrait<f32>)> = vec![("input", &mut adj_x)];
+        op.apply_field_buffers_with_transpose(
+            OperatorTransposeRequest::Adjoint, adj_inputs, &mut adj_outputs,
+        ).unwrap();
+        assert!(adj_x.as_slice().iter().any(|&v| v.abs() > 1e-8), "named adjoint output is all zeros");
+    }
 
-        for i in 0..global_dof {
-            let diff = (recovered.as_slice()[i] - x.as_slice()[i]).abs();
-            assert!(
-                diff < 1e-3,
-                "FDM inverse recovery mismatch at {}: expected {} got {} diff={}",
-                i,
-                x.as_slice()[i],
-                recovered.as_slice()[i],
-                diff
-            );
-        }
+    #[test]
+    fn device_qfunction_auto_detect_skips_f64() {
+        let Some(rt) = gpu_runtime_or_skip() else { return; };
+        let nelem = 2usize;
+        let p = 2;
+        let q = 3;
+        let num_dof = p;
+        let ncomp = 1;
+        let global_dof = nelem * num_dof;
+        let offsets: Vec<i32> = (0..nelem * num_dof).map(|i| i as i32).collect();
+        let restr = WgpuElemRestriction::<f64>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let restr2 = WgpuElemRestriction::<f64>::new_offset(
+            nelem, num_dof, ncomp, 1, global_dof, &offsets, Some(rt.clone()),
+        ).unwrap();
+        let basis = WgpuBasis::<f64>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let basis2 = WgpuBasis::<f64>::new(1, ncomp, p, q, QuadMode::Gauss, Some(rt.clone())).unwrap();
+        let op = WgpuOperatorBuilder::new()
+            .runtime(rt.clone())
+            .qfunction(Box::new(Identity::with_components(1)))
+            .field("input", Some(Box::new(restr)), Some(Box::new(basis)), WgpuFieldVector::Active)
+            .field("output", Some(Box::new(restr2)), Some(Box::new(basis2)), WgpuFieldVector::Active)
+            .build().unwrap();
+        let input = CpuVector::from_vec((0..global_dof).map(|i| 0.1 * (i + 1) as f64).collect());
+        let mut output = CpuVector::new(global_dof);
+        op.apply(&input, &mut output).unwrap();
+        assert!(output.as_slice().iter().any(|&v| v.abs() > 1e-8), "f64 operator output is all zeros");
     }
 }

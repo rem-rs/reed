@@ -1,4 +1,4 @@
-use reed_core::{QFunctionContext, ReedError, ReedResult};
+use reed_core::{qfunction::QFunctionTrait, QFunctionContext, ReedError, ReedResult};
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
@@ -1059,6 +1059,18 @@ impl GpuRuntime {
 
     pub fn shared(self) -> Arc<Self> {
         Arc::new(self)
+    }
+
+    /// Try to create a device-side gallery QFunction for the given name (f32 only).
+    ///
+    /// Returns `None` when no device implementation exists for `name`.
+    /// This is used by [`WgpuOperatorBuilder`](crate::operator::WgpuOperatorBuilder)
+    /// for automatic device QFunction integration.
+    pub fn create_device_qfunction_f32(
+        self: &Arc<Self>,
+        name: &str,
+    ) -> Option<ReedResult<Box<dyn QFunctionTrait<f32>>>> {
+        crate::qfunction_device::try_create_device_q_function_f32(name, self.clone())
     }
 
     pub fn set_layout(&self) -> &wgpu::BindGroupLayout {
