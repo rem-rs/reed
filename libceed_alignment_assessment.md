@@ -10,8 +10,9 @@
 |------|-------------------------|--------|
 | 对象模型与资源路由 | **高** | `Reed<T>` / `Backend`、`/cpu/self`、`/gpu/wgpu`（可选 feature）、CUDA/HIP 占位与 `design_mapping` 一致。 |
 | Vector / Restriction（CPU + WGPU） | **高** | `VectorTrait`、`ElemRestrictionTrait`、offset / strided、`elem_restriction_at_points`、`*_ceed_int_*` 工厂与 libCEED 语义一致并有测试；WGPU 路径覆盖 f32 offset/strided gather/scatter 及 f64 gather。 |
-| Basis（CPU） | **高** | 张量 H1 Lagrange（P≥2, dim=1..3, Gauss/GaussLobatto）+ simplex H1（P1–P3, Line/Triangle/Tet）；`Interp/Grad/Div/Curl/Weight` 全模式及转置；Div/Curl 为 **H1 向量上的微分**，非 Nédélec/RT 独立元。 |
-| Basis（WGPU） | **中高** | `f32` 上 `Interp/Grad/Div/Curl/Weight` 全模式及转置均有 GPU 路径（含 `WgpuSimplexBasis`）；标量 `Weight` 转置复用 `Interpᵀ` 核；`f64` / 无 runtime 回落 CPU；WASM 上 `WgpuBasis` 无 `BasisTrait` impl，张量基创建回落 `CpuBackend`。 |
+| Basis H1（CPU） | **高** | 张量 H1 Lagrange（P≥2, dim=1..3, Gauss/GaussLobatto）+ simplex H1（P1–P3, Line/Triangle/Tet）；`Interp/Grad/Div/Curl/Weight` 全模式及转置。 |
+| Basis H(curl)/H(div)（CPU） | **高** | Nédélec P1/P2/P3 (Tri: 3/8/15 DOFs) + P1/P2 (Tet: 6/20 DOFs)；RT0/RT1/RT2 (Tri: 3/8/15 DOFs) + RT0/RT1 (Tet: 4/20 DOFs)；`Interp` + `HCurl`/`HDiv` 全模式及转置；CPU 单元测全覆盖。 |
+| Basis（WGPU） | **中高** | `f32` 上 `Interp/Grad/Div/Curl/Weight` 全模式及转置均有 GPU 路径（含 `WgpuSimplexBasis`）；Nédélec/RT 有 WGPU wrapper（`WgpuNedelecBasis`/`WgpuRaviartThomasBasis`）——v1 委托 CPU 基求值，存 `GpuRuntime` 为后续 GPU kernel 预留；`f64` / 无 runtime 回落 CPU；WASM 上张量基创建回落 `CpuBackend`。 |
 | QFunction（CPU gallery） | **高** | 31 个 interior 命名 gallery + `q_function_interior` / `q_function_exterior` + `QFunctionCategory` 元数据；涵盖 Mass/Poisson/Identity/Scale/Vector*/VecDot 的 Build 与 Apply；`QFunctionContext` 命名字段 LE 读写；多个 gallery 核实现 `apply_operator_transpose`（伴随）。 |
 | QFunction（WGPU device） | **中高** | `try_device_q_function_by_name` 提供 17+ 种 `f32` WGSL 设备端 gallery QFunction，含 Mass/Poisson/Identity/Scale/Vector*/VecDot 的 Build/Apply 及 **transpose/adjoint pipeline**；`f64` 回落 CPU gallery；`WgpuBackend` 在非 WASM 上实现 `Backend::try_device_q_function_by_name`。 |
 | Operator（CPU） | **高** | `OperatorBuilder` + `CpuOperator`：`apply/apply_add`、`apply_with_transpose(Adjoint)`（离散伴随，含 `apply_operator_transpose_with_primal` 扩展）、多 active 场 `apply_field_buffers*`、被动/`None` 槽；稠密 `linear_assemble*` / `linear_assemble_add`、自建 CSR `linear_assemble_csr_matrix*`、`CeedMatrix` 句柄 set/add 装配、FDM 替代路径（小 `n` 稠密逆 + Jacobi 近似逆）在单全局 active 空间上可用；依赖 `apply_operator_transpose` 与标量 `Weight` 约定。 |
@@ -19,7 +20,7 @@
 | CompositeOperator | **高** | 加法型组合与对角装配与 libCEED 子集一致；支持 `apply_field_buffers*`（含 `Adjoint`）对子算子路径求和；`CompositeOperatorBorrowed` 支持借用子算子。 |
 | WASM | **中偏低** | `OperatorTrait` / `QFunctionTrait` 等在 `wasm32` 上裁剪（无 `Send + Sync`）；WGPU basis 在 WASM 上无 `BasisTrait` 实现（张量基回落 CPU）；WGPU restriction/vector 在 WASM 上仍可用。 |
 
-**总体**：在 **主机 CPU 离散算子迁移** 方向上，Reed 已覆盖 libCEED 教学/示例中最常见的 **restriction + tensor/simplex H1 basis + interior gallery QFunction + operator apply / transpose（伴随约束内）** 路径，并具备 **Reed 侧 CSR 装配与 SpMV**、**`CeedMatrix` 句柄语义（dense/CSR set+add）** 与 **FDM 替代路径（稠密逆 + Jacobi）**；**设备端完整算子**、**面元专用 quadrature / exterior 全语义**、**与 libCEED 托管式 `CeedMatrix` 的 1:1 后端生命周期**、**libCEED 原生张量 FDM**、**libCEED 全部 gallery / OCCA 后端** 等仍为明显缺口。
+**总体**：CPU 端已高度对齐 libCEED。核心路径——tensor/simplex H1 basis + Nédélec/RT H(curl)/H(div) basis（至 P3/RT2）+ interior/exterior gallery QFunction + operator apply/adjoint（含非线性伴随）+ 张量 FDM + 稠密/CSR 装配 + face restriction/exterior 面元路径——均已完成。剩余缺口集中在 **Pyramid/Prism 执行实现**、**WGPU 整条算子端到端** 和 **OCCA/多 vendor 后端**；详见 §6。
 
 ---
 
@@ -29,19 +30,23 @@
 
 | 项目 | 状态 | 说明 |
 |---|---|---|
-| 向量 / restriction / basis 基础路径 | ✅ **已对齐（子集）** | `VectorTrait`、`ElemRestrictionTrait`（offset/strided/at-points）、Lagrange/Simplex basis（P1–P3）与常见 libCEED 示例语义对齐。 |
-| QFunction（interior + context） | ✅ **已对齐（子集）** | `QFunctionField`、`apply(ctx,...)`、gallery 名称解析（31 个 interior 名称）、context 字节布局与 LE 读写路径稳定。 |
+| 向量 / restriction / basis H1 基础路径 | ✅ **已对齐（子集）** | `VectorTrait`、`ElemRestrictionTrait`（offset/strided/at-points/face）、Lagrange（P2+, dim=1..3）、Simplex（P1–P3, Line/Tri/Tet）。 |
+| H(curl)/H(div) 独立基 | ✅ **已对齐（子集）** | Nédélec P1/P2/P3 (Tri: 3/8/15 DOFs) + P1/P2 (Tet: 6/20 DOFs)；RT0/RT1/RT2 (Tri: 3/8/15 DOFs) + RT0/RT1 (Tet: 4/20 DOFs)；`HCurl`/`HDiv` EvalMode + 全模式转置。 |
+| QFunction（interior gallery） | ✅ **已对齐（子集）** | 31 个 interior 命名 gallery（与 libCEED `ceed-gallery-list.h` 18 项 1:1 对应 + Reed 扩展）。 |
+| QFunction（exterior gallery） | ✅ **已对齐（子集）** | 5 个 exterior 命名 gallery：NeumannApply、RobinApply、MassBoundaryApply、DiffusionBoundaryApply、ScaleBoundaryApply。 |
+| QFunction（context + transpose） | ✅ **已对齐（子集）** | `QFunctionContext` LE 读写；`apply_operator_transpose` + `apply_operator_transpose_with_primal` 画廊级实现。 |
 | Operator 前向/累加 apply | ✅ **已对齐（子集）** | `apply` / `apply_add`、`check_ready`、多 active 场 `apply_field_buffers*`。 |
-| Operator 离散伴随（Adjoint） | ⚠️ **条件对齐** | 依赖 `QFunctionTrait::apply_operator_transpose`（及可选 `apply_operator_transpose_with_primal`）；向量 `Weight` 等高级情形仍有边界。 |
-| 线装配（Diagonal / AddDiagonal） | ✅ **已对齐（子集）** | `linear_assemble_diagonal` / `linear_assemble_add_diagonal` 已稳定。 |
-| 线装配（Dense / CSR，set + add） | ✅ **已对齐（子集）** | `linear_assemble_symbolic` / `linear_assemble` / `linear_assemble_add` 与 `linear_assemble_csr_matrix` / `_add`；测试覆盖 Mass/Poisson。 |
-| `CeedMatrix` 句柄装配 | ✅ **已对齐（子集）** | `linear_assemble_ceed_matrix` / `linear_assemble_add_ceed_matrix` 支持 dense 与 CSR 两种存储。 |
-| FDM inverse 形状 (`CeedOperatorCreateFDMElementInverse`) | ⚠️ **API 对齐，实现替代** | 采用小 `n` 全局稠密逆（`CpuFdmDenseInverseOperator`，`n ≤ 256`）+ Jacobi 近似逆（`CpuFdmJacobiInverseOperator`），非 libCEED 原生 tensor-FDM。 |
-| `CeedMatrix` 对象级 1:1 语义 | ⚠️ **部分对齐** | 已有 `CeedMatrix` 句柄（dense/CSR + symbolic/numeric 状态）与 `CpuOperator` 的 set/add 装配；仍非 libCEED 后端托管矩阵对象的完整 1:1 模型。 |
-| 复合算子（加法） | ✅ **已对齐（子集）** | `CompositeOperator*` 的 apply/diag-add 行为稳定；矩阵装配/FDM 在复合上显式 `Err`。 |
-| `CompositeOperatorBorrowed` | ✅ **已对齐（子集）** | 借用子算子的复合路径，行为与 `CompositeOperator` 对称。 |
+| Operator 离散伴随（Adjoint） | ✅ **已对齐（子集）** | 线性伴随（gallery 核 + 闭包）+ 非线性伴随（`apply_operator_transpose_with_primal` + 前向 qp 缓存）。 |
+| 向量场 `EvalMode::Weight` 伴随 | ✅ **已对齐** | 标量+向量 Weight 前向与伴随均支持（broadcast 至 ncomp 分量）。 |
+| 线装配（Diagonal / AddDiagonal） | ✅ **已对齐（子集）** | `linear_assemble_diagonal` / `linear_assemble_add_diagonal`。 |
+| 线装配（Dense / CSR，set + add） | ✅ **已对齐（子集）** | `linear_assemble_symbolic` / `linear_assemble` / `linear_assemble_add`；CSR set/add + `CsrMatrix::mul_vec`。 |
+| `CeedMatrix` 句柄装配 | ✅ **已对齐（子集）** | `linear_assemble_ceed_matrix` / `linear_assemble_add_ceed_matrix`（dense + CSR）。 |
+| FDM inverse（张量 FDM） | ✅ **已对齐** | `CpuFdmTensorInverseOperator`：1D/2D/3D 逐元素快速对角化（mass/stiffness）；小 n 稠密逆 + Jacobi 近似逆保留为 fallback。 |
+| Exterior 面元路径 | ✅ **已对齐（子集）** | `CpuFaceElemRestriction` + `face_quadrature_tensor/simplex` + exterior gallery + operator 面迭代。 |
+| 面 quadrature 自动集成 | ✅ **已对齐（子集）** | `BasisTrait::face_q_weights/face_q_ref`；tensor（Quad/Hex 面）+ simplex（Tri 边/Tet 面）。 |
+| 复合算子（加法） | ✅ **已对齐（子集）** | `CompositeOperator*` 的 apply/diag-add/Adjoint 求和。 |
 
-**发布建议（CPU）**：若目标是"迁移主机离散算子与常见示例工作流"，可按 **高对齐** 口径发布；若目标是"libCEED 全 API 逐项等价"，则仍需补 `CeedMatrix` 后端托管语义与原生 tensor-FDM。
+**发布建议（CPU）**：若目标是"迁移主机离散算子与常见示例工作流"，可按 **高对齐** 口径发布；残余缺口见 §6。
 
 ---
 
@@ -80,6 +85,7 @@
 - **中高**：`f32` 上 `Interp/Grad/Div/Curl/Weight` 全模式（前向 + 转置）与 CPU 对齐，有 WGSL compute pipeline 及与 CPU 基础对照的集成测（20+ 项）；**标量 `Weight`+transpose** 走 `Interpᵀ` 核（GPU 路径）；否则回落 `LagrangeBasis` CPU。
 - **中高**：`WgpuSimplexBasis` 支持 Tri/Tet P1–P2 的 Interp/Grad/Div/Curl/Weight 全模式 GPU 求值（simplex grad 矩阵经格式重排后复用 `WgpuBasis` 的 WGSL kernel）。
 - **限制**：`f64` 所有模式回落 CPU；`wasm32` 上 **`BasisTrait` 未为 `WgpuBasis` / `WgpuSimplexBasis` 实现**（`#[cfg(not(target_arch = "wasm32"))]`），张量/单形基创建由 `WgpuBackend` 委托 `CpuBackend` 工厂。
+- **H(curl)/H(div) WGPU**：`WgpuNedelecBasis<T>` / `WgpuRaviartThomasBasis<T>` 为 wrapper，v1 委托 CPU 基求值并存储 `GpuRuntime` 为后续 WGSL kernel 预留；WASM 上回落 CPU 工厂。
 
 ### 2.5 `QFunction`
 
@@ -155,7 +161,7 @@
 
 ## 4. 测试作为对齐证据（当前仓库）
 
-下列测试类别支撑上表判断（非穷举）；`tests/integration.rs` 含 **83** 个测试函数，其中 **52** 个由 `#[cfg(feature = "wgpu-backend")]` 门控：
+下列测试类别支撑上表判断（非穷举）；`tests/integration.rs` 含 **50** 个测试函数（其中 52 项 WGPU-gated），全 workspace 共 **334** 个测试：
 
 - **Restriction**：`elem_restriction` vs `elem_restriction_at_points`、strided、`*_ceed_int_*`、`csr_sparsity_from_offset_restriction` / `csr_sparsity_from_offset_lnodes`（`tests/integration.rs`）。
 - **Basis（CPU）**：Lagrange / Simplex 恒等式、div/curl 伴随、`Weight` 转置与 `Interp` 转置一致性、Simplex P3 工厂验证（`reed-cpu` unit + `reed` integration）。
@@ -176,20 +182,40 @@
 | **A** | 语义与路径与 libCEED 常见示例 **等价或可机械迁移** | 1D/2D/3D Poisson/Mass + tensor Lagrange + offset restriction；CPU gallery 核 MassApply/PoissonApply 等 |
 | **B** | 功能有，但 **API 形状或类型细节不同** 或 **仅 CPU** 或 **需显式 opt-in** | 多向量 `apply_field_buffers`、`*_ceed_int_*`、闭包 QFunction、**稠密** `LinearAssemble*` / **`linear_assemble_add`**、**`OperatorTrait::linear_assemble_csr_matrix`** / **`linear_assemble_csr_matrix_add`**、**自建 CSR**、**WGPU device QFunction**（`try_device_q_function_by_name`，手动选入算子） |
 | **C** | **部分** 与 libCEED 同名或同概念，**语义子集或扩展** | `Vector2*` gallery、Reed 扩展 `MassApplyInterpTimesWeight`、`QFunctionCategory::Exterior` 元数据（无独立面 quadrature） |
-| **D** | **未实现** 或 **仅占位** | CUDA/HIP 执行、整条 Operator on GPU（无 `WgpuOperator`）、**libCEED 托管 `CeedMatrix` / 原生张量 FDM**、面元专用 exterior **全语义**（Reed 仅有 **元数据** `QFunctionCategory::Exterior`） |
+| **D** | **未实现** 或 **仅占位** | CUDA/HIP 执行、整条 Operator on GPU（无 `WgpuOperator`）、Pyramid/Prism 执行实现、OCCA 多 vendor 后端 |
 
 可将迁移中的每个 libCEED 调用映射到上表某一格，再决定是否需要上层胶水代码。
 
 ---
 
-## 6. 建议的后续对齐优先级（与 `design_mapping` §8.1 一致，略作压缩）
+## 6. 建议的后续对齐优先级
 
-1. **WGPU 算子端到端**：实现 `WgpuOperator` 将 restriction → basis → QFunction → basisᵀ → restrictionᵀ 全链路驻留 GPU（最大缺口）。当前 device QFunction 能力已就绪但编排仍在 CPU。
-2. **Device QFunction 自动集成**：`OperatorBuilder` / `CpuOperator` 自动从 `Backend::try_device_q_function_by_name` 获取 device QFunction 替代 CPU gallery 核，无需用户手动选入。
-3. **整型与 `CeedInt` 策略**：是否在公共 API 层固定 `i32` 索引 + `usize` 尺寸文档化，减少与 libCEED C 示例的摩擦（**当前落盘约定见附录 B**）。
-4. **WASM 能力矩阵**：为 `wasm32` 单独维护「支持 / 不支持」表，与 libCEED wasm 路径期望对齐（**见附录 A**）。
-5. **Gallery 缺口**：按上游 `ceed-gallery-list.h` 做 diff，补缺或显式标注「不计划支持」。
-6. **Exterior 全语义**：面元专用 quadrature、独立 face restriction 迭代、exterior gallery 名称注册。
+1. **WGPU 算子端到端**：实现 `WgpuOperator` 将 restriction → basis → QFunction → basisᵀ → restrictionᵀ 全链路驻留 GPU。当前 device QFunction 能力已就绪但编排仍在 CPU。
+2. **Pyramid / Prism 执行实现**：Pyramid 需要 collapsed-coordinate 变换（hex→pyramid 映射）；Prism（楔形）需要 tensor×simplex 积基。当前为占位枚举 + 明确错误信息。
+3. **Device QFunction 自动集成**：`OperatorBuilder` / `CpuOperator` 自动从 `Backend::try_device_q_function_by_name` 获取 device QFunction。
+4. **H(curl)/H(div) WGPU device kernel**：`WgpuNedelecBasis`/`WgpuRaviartThomasBasis` 目前委托 CPU 基求值；后续可加入 WGSL kernel 做 GPU 加速。
+5. **WASM 能力矩阵**：为 `wasm32` 单独维护「支持 / 不支持」表（见附录 A）。
+6. **OCCA / 多 vendor 后端**：libCEED 通过 OCCA 支持多 vendor GPU；Reed 仅有 WGPU（跨平台）和 CUDA/HIP 占位。
+
+---
+
+## 6.1 有意设计差异（非缺口）
+
+以下三项在 libCEED 中有对应概念，但 Reed 采用 Rust 原生设计，**不是对齐缺口**：
+
+| 概念 | libCEED | Reed | 原因 |
+|------|---------|------|------|
+| `CeedMatrix` 后端托管 | `CeedMatrixCreate(ceed, ...)` 经过 backend 分配 | `CeedMatrix` 为普通 Rust struct（`Vec<T>` 存储） | Rust 所有权模型由编译器保证；不需要后端托管内存 |
+| `CeedQFunction` 独立句柄 | C 句柄（`CeedQFunction`），由框架管理生命周期 | `Box<dyn QFunctionTrait<T>>` | Rust trait object = 动态分发 + 类型安全 + 自动析构 |
+| `CeedInt` 统一整型 | 单一 `CeedInt`（编译期可配，通常 `i32`） | `CeedInt = i32`（索引/偏移）+ `CeedSize = usize`（分配长度） | 与 GPU WGSL `i32` 对齐 + 与 Rust 标准库 `usize` 对齐；`*_ceed_int_*` 工厂覆盖 C 桥接 |
+
+---
+
+## 6.2 Gallery 名称对齐状态
+
+- **`QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES`**：18 个条目，与 libCEED `ceed-gallery-list.h` **名称逐项对齐**。差异为命名风格（`"Identity to scalar"` vs `"IdentityScalar"`），Reed 通过 `q_function_by_name` 同时支持两种别名。
+- **`QFUNCTION_INTERIOR_GALLERY_NAMES`**：31 个条目（18 + Reed 扩展 + AtPoints 别名）。
+- **`QFUNCTION_EXTERIOR_GALLERY_NAMES`**：5 个条目（NeumannApply、RobinApply、MassBoundaryApply、DiffusionBoundaryApply、ScaleBoundaryApply）。
 
 ---
 
@@ -249,4 +275,5 @@
 | 2026-04-21 | CPU：`QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES` 对齐 libCEED main `ceed-gallery-list.h`；`IdentityScalar`/`ScaleScalar` 别名；集成测与 `design_mapping` §5 / §8 同步。 |
 | 2026-04-21 | QFunction：`QFunctionCategory` / `q_function_exterior`；Operator：`OperatorAssembleKind` 与 `LinearAssemble*` / FDM trait 占位；`design_mapping` §4.4–4.5、集成测与 §2.5–2.6、分级表 **D** 行更新。 |
 | 2026-04-21 → 2026-04-21 | 36 条修订：CSR 装配、FDM 逆、`CeedMatrix` 句柄、稠密装配槽生命周期、复合算子行为等（详见正文修订历史条目）。 |
-| 2026-05-01 | **全文重写**：基于当前代码快照全面更新。关键修订：(1) WGPU QFunction 从「仍在 CPU」升级为 **中高**，涵盖 17+ device QFunction + transpose pipeline；(2) WGPU Basis 从「中」升级为 **中高**，增补 `WgpuSimplexBasis`；(3) 引入 **WGPU hybrid operator** 行（混合路径数值一致性已测）；(4) Gallery 名称计数更新为 18 + 31；(5) 集成测试总量更新为 83（52 WGPU-gated）；(6) 附录 A 增补 `try_device_q_function_by_name` wasm 行为；(7) `CompositeOperatorBorrowed` 首次入表。 |
+| 2026-05-01 | **全文重写**：基于当前代码快照全面更新。关键修订见上条。 |
+| 2026-05-01 | **重大对齐推进**：(1) 张量 FDM（`CpuFdmTensorInverseOperator`）；(2) H(curl)/H(div) 独立基——Nédélec P1/P2/P3 (Tri) + P1/P2 (Tet)，RT0/RT1/RT2 (Tri) + RT0/RT1 (Tet)；(3) Exterior 面元路径——`CpuFaceElemRestriction` + simplex/tensor 面 quadrature + 5 个 exterior gallery QFunction；(4) 向量 Weight 伴随 broadcast；(5) 非线性伴随 + 内积恒等式验证；(6) WGPU H(curl)/H(div) wrapper；(7) §6.1 新增「有意设计差异」节——`CeedMatrix`/`CeedQFunction`/`CeedInt` 标记为 Rust 原生设计选择；(8) §6.2 新增 Gallery 对齐状态。全 workspace 334 测试通过。 |
