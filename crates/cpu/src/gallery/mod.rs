@@ -1,9 +1,11 @@
+pub mod boundary;
 mod ceed_gallery;
 mod helpers;
 mod mass;
 mod poisson;
 mod vec_dot;
 
+pub use boundary::{NeumannApply, RobinApply};
 pub use ceed_gallery::{
     Identity, IdentityScalar, Scale, ScaleScalar, Vector2MassApply, Vector2Poisson1DApply,
     Vector2Poisson2DApply, Vector3MassApply, Vector3Poisson1DApply, Vector3Poisson2DApply,
