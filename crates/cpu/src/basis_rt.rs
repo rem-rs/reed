@@ -238,6 +238,21 @@ impl<T: Scalar> RaviartThomasBasis<T> {
         })
     }
 
+    // ── public data accessors ──────────────────────────────────────────────
+
+    /// Raw interp matrix: `[(qpt * num_dof + dof) * dim + d]`,
+    /// length `num_qpoints * num_dof * dim`.
+    #[inline]
+    pub fn interp_data(&self) -> &[T] {
+        &self.interp
+    }
+
+    /// Raw divergence matrix: `[qpt * num_dof + dof]` (scalar), length `nq × ndof`.
+    #[inline]
+    pub fn div_data(&self) -> &[T] {
+        &self.div_matrix
+    }
+
     // ── accessor helpers ───────────────────────────────────────────────────
 
     /// `interp[(qpt * num_dof + dof) * dim + d]`

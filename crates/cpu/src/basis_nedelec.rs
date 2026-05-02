@@ -248,6 +248,22 @@ impl<T: Scalar> NedelecBasis<T> {
         })
     }
 
+    // ── public data accessors ──────────────────────────────────────────────
+
+    /// Raw interp matrix: `[(qpt * num_dof + dof) * dim + d]`,
+    /// length `num_qpoints * num_dof * dim`.
+    #[inline]
+    pub fn interp_data(&self) -> &[T] {
+        &self.interp
+    }
+
+    /// Raw curl matrix. 2D: `[qpt * num_dof + dof]` (scalar, len `nq × ndof`).
+    /// 3D: `[(qpt * num_dof + dof) * 3 + d]` (vector, len `nq × ndof × 3`).
+    #[inline]
+    pub fn curl_data(&self) -> &[T] {
+        &self.curl_matrix
+    }
+
     // ── accessor helpers ───────────────────────────────────────────────────
 
     /// `interp[(qpt * num_dof + dof) * dim + d]`

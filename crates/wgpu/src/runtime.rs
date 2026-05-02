@@ -72,6 +72,15 @@ pub struct GpuRuntime {
     basis_post_pipeline: wgpu::ComputePipeline,
     basis_weight_layout: wgpu::BindGroupLayout,
     basis_weight_pipeline: wgpu::ComputePipeline,
+    /// Vector-valued basis interp (Nédélec / Raviart-Thomas). Reuses [`basis_interp_layout`].
+    basis_vector_interp_pipeline: wgpu::ComputePipeline,
+    basis_vector_interp_transpose_pipeline: wgpu::ComputePipeline,
+    /// Scalar forward/transpose (Nédélec curl 2D, Raviart-Thomas div). Reuses [`basis_interp_layout`].
+    basis_scalar_forward_pipeline: wgpu::ComputePipeline,
+    basis_scalar_transpose_pipeline: wgpu::ComputePipeline,
+    /// Nédélec curl 3D forward/transpose. Reuses [`basis_interp_layout`].
+    basis_curl3d_pipeline: wgpu::ComputePipeline,
+    basis_curl3d_transpose_pipeline: wgpu::ComputePipeline,
     /// Gallery-style scalar `out[i] = in0[i] * in1[i]` at quadrature points (Mass apply, Poisson1D apply, …).
     qfunction_pointwise_mul_layout: wgpu::BindGroupLayout,
     qfunction_pointwise_mul_pipeline: wgpu::ComputePipeline,
@@ -567,6 +576,43 @@ impl GpuRuntime {
             "basis_weight_tile_main",
         );
 
+        let basis_vector_interp_pipeline = create_pipeline_with_module(
+            &device,
+            &basis_interp_layout,
+            &shader_main,
+            "basis_vector_interp_main",
+        );
+        let basis_vector_interp_transpose_pipeline = create_pipeline_with_module(
+            &device,
+            &basis_interp_layout,
+            &shader_main,
+            "basis_vector_interp_transpose_main",
+        );
+        let basis_scalar_forward_pipeline = create_pipeline_with_module(
+            &device,
+            &basis_interp_layout,
+            &shader_main,
+            "basis_scalar_forward_main",
+        );
+        let basis_scalar_transpose_pipeline = create_pipeline_with_module(
+            &device,
+            &basis_interp_layout,
+            &shader_main,
+            "basis_scalar_transpose_main",
+        );
+        let basis_curl3d_pipeline = create_pipeline_with_module(
+            &device,
+            &basis_interp_layout,
+            &shader_main,
+            "basis_curl3d_main",
+        );
+        let basis_curl3d_transpose_pipeline = create_pipeline_with_module(
+            &device,
+            &basis_interp_layout,
+            &shader_main,
+            "basis_curl3d_transpose_main",
+        );
+
         let qfunction_pointwise_mul_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("reed-qf-pointwise-mul-f32"),
@@ -970,6 +1016,12 @@ impl GpuRuntime {
             basis_post_pipeline,
             basis_weight_layout,
             basis_weight_pipeline,
+            basis_vector_interp_pipeline,
+            basis_vector_interp_transpose_pipeline,
+            basis_scalar_forward_pipeline,
+            basis_scalar_transpose_pipeline,
+            basis_curl3d_pipeline,
+            basis_curl3d_transpose_pipeline,
             qfunction_pointwise_mul_layout,
             qfunction_pointwise_mul_pipeline,
             qfunction_vec2_dot_pipeline,
@@ -1099,6 +1151,30 @@ impl GpuRuntime {
 
     pub fn basis_weight_pipeline(&self) -> &wgpu::ComputePipeline {
         &self.basis_weight_pipeline
+    }
+
+    pub fn basis_vector_interp_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.basis_vector_interp_pipeline
+    }
+
+    pub fn basis_vector_interp_transpose_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.basis_vector_interp_transpose_pipeline
+    }
+
+    pub fn basis_scalar_forward_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.basis_scalar_forward_pipeline
+    }
+
+    pub fn basis_scalar_transpose_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.basis_scalar_transpose_pipeline
+    }
+
+    pub fn basis_curl3d_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.basis_curl3d_pipeline
+    }
+
+    pub fn basis_curl3d_transpose_pipeline(&self) -> &wgpu::ComputePipeline {
+        &self.basis_curl3d_transpose_pipeline
     }
 
     pub fn qfunction_pointwise_mul_layout(&self) -> &wgpu::BindGroupLayout {
@@ -2004,6 +2080,179 @@ fn restriction_strided_scatter_main(@builtin(global_invocation_id) gid: vec3<u32
         let val = st_u[idx];
         st_v[gu] = st_v[gu] + val;
     }
+}
+
+// ── Vector-valued basis interp (Nédélec / Raviart-Thomas) ──────────────
+// Reuses bi_mat, bi_u, bi_v, bi_p (BasisInterpParams).
+// Input u: [elem * ncomp * num_dof], u[dof*ncomp] is the scalar DOF value.
+// Matrix: [(qpt * num_dof + dof) * dim + d], size nq * nd * dim.
+// Output v: [elem * nq * dim], vector at quadrature points.
+
+@compute @workgroup_size(64)
+fn basis_vector_interp_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= bi_p.output_size) {
+        return;
+    }
+
+    let dim = bi_p.dim;
+    let nq = bi_p.num_qpoints;
+    let nd = bi_p.num_dof;
+    let ncomp = bi_p.ncomp;
+
+    let per_elem_out = nq * dim;
+    let elem = idx / per_elem_out;
+    let rem = idx % per_elem_out;
+    let qpt = rem / dim;
+    let d = rem % dim;
+
+    var sum = 0.0;
+    let u_elem_base = elem * nd * ncomp;
+    let mat_plane_base = qpt * nd;
+    for (var dof = 0u; dof < nd; dof = dof + 1u) {
+        sum = sum + bi_mat[(mat_plane_base + dof) * dim + d] * bi_u[u_elem_base + dof * ncomp];
+    }
+    bi_v[idx] = sum;
+}
+
+@compute @workgroup_size(64)
+fn basis_vector_interp_transpose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= bi_p.output_size) {
+        return;
+    }
+
+    let dim = bi_p.dim;
+    let nq = bi_p.num_qpoints;
+    let nd = bi_p.num_dof;
+    let ncomp = bi_p.ncomp;
+
+    let per_elem_out = nd * ncomp;
+    let elem = idx / per_elem_out;
+    let rem = idx % per_elem_out;
+    let dof = rem / ncomp;
+    let out_local = dof * ncomp;
+
+    var sum = 0.0;
+    let u_elem_base = elem * nq * dim;
+    for (var qpt = 0u; qpt < nq; qpt = qpt + 1u) {
+        let mat_plane_base = qpt * nd;
+        for (var d = 0u; d < dim; d = d + 1u) {
+            sum = sum + bi_mat[(mat_plane_base + dof) * dim + d] * bi_u[u_elem_base + qpt * dim + d];
+        }
+    }
+    bi_v[elem * per_elem_out + out_local] += sum;
+}
+
+// ── Scalar forward/transpose (curl 2D, div) ────────────────────────────
+// Matrix: [qpt * num_dof + dof], size nq * nd.
+// Input u: [elem * nd * ncomp], u[dof*ncomp] is the scalar DOF value.
+// Output v: [elem * nq], scalar per quadrature point.
+
+@compute @workgroup_size(64)
+fn basis_scalar_forward_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= bi_p.output_size) {
+        return;
+    }
+
+    let nq = bi_p.num_qpoints;
+    let nd = bi_p.num_dof;
+    let ncomp = bi_p.ncomp;
+
+    let elem = idx / nq;
+    let qpt = idx % nq;
+
+    var sum = 0.0;
+    let u_elem_base = elem * nd * ncomp;
+    let mat_row = qpt * nd;
+    for (var dof = 0u; dof < nd; dof = dof + 1u) {
+        sum = sum + bi_mat[mat_row + dof] * bi_u[u_elem_base + dof * ncomp];
+    }
+    bi_v[idx] = sum;
+}
+
+@compute @workgroup_size(64)
+fn basis_scalar_transpose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= bi_p.output_size) {
+        return;
+    }
+
+    let nq = bi_p.num_qpoints;
+    let nd = bi_p.num_dof;
+    let ncomp = bi_p.ncomp;
+
+    let per_elem_out = nd * ncomp;
+    let elem = idx / per_elem_out;
+    let rem = idx % per_elem_out;
+    let dof = rem / ncomp;
+    let out_local = dof * ncomp;
+
+    var sum = 0.0;
+    let u_elem_base = elem * nq;
+    for (var qpt = 0u; qpt < nq; qpt = qpt + 1u) {
+        sum = sum + bi_mat[qpt * nd + dof] * bi_u[u_elem_base + qpt];
+    }
+    bi_v[elem * per_elem_out + out_local] += sum;
+}
+
+// ── Curl 3D forward/transpose ──────────────────────────────────────────
+// Matrix: [(qpt * num_dof + dof) * 3 + d], size nq * nd * 3.
+// Input u: [elem * nd * ncomp], u[dof*ncomp] is the scalar DOF value.
+// Output v: [elem * nq * 3], vector curl per quadrature point.
+
+@compute @workgroup_size(64)
+fn basis_curl3d_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= bi_p.output_size) {
+        return;
+    }
+
+    let nq = bi_p.num_qpoints;
+    let nd = bi_p.num_dof;
+    let ncomp = bi_p.ncomp;
+
+    let per_elem_out = nq * 3u;
+    let elem = idx / per_elem_out;
+    let rem = idx % per_elem_out;
+    let qpt = rem / 3u;
+    let d = rem % 3u;
+
+    var sum = 0.0;
+    let u_elem_base = elem * nd * ncomp;
+    let mat_plane_base = qpt * nd;
+    for (var dof = 0u; dof < nd; dof = dof + 1u) {
+        sum = sum + bi_mat[(mat_plane_base + dof) * 3u + d] * bi_u[u_elem_base + dof * ncomp];
+    }
+    bi_v[idx] = sum;
+}
+
+@compute @workgroup_size(64)
+fn basis_curl3d_transpose_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= bi_p.output_size) {
+        return;
+    }
+
+    let nq = bi_p.num_qpoints;
+    let nd = bi_p.num_dof;
+    let ncomp = bi_p.ncomp;
+
+    let per_elem_out = nd * ncomp;
+    let elem = idx / per_elem_out;
+    let rem = idx % per_elem_out;
+    let dof = rem / ncomp;
+    let out_local = dof * ncomp;
+
+    var sum = 0.0;
+    let u_elem_base = elem * nq * 3u;
+    for (var qpt = 0u; qpt < nq; qpt = qpt + 1u) {
+        for (var d = 0u; d < 3u; d = d + 1u) {
+            sum = sum + bi_mat[(qpt * nd + dof) * 3u + d] * bi_u[u_elem_base + qpt * 3u + d];
+        }
+    }
+    bi_v[elem * per_elem_out + out_local] += sum;
 }
 "#;
 
