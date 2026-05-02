@@ -47,11 +47,12 @@ pub use elem_restriction_face::CpuFaceElemRestriction;
 pub use fdm_inverse::{CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, FDM_DENSE_MAX_N};
 pub use fdm_tensor::{CpuFdmTensorInverseOperator, FdmOperatorKind};
 pub use gallery::{
-    Identity, IdentityScalar, Mass1DBuild, Mass2DBuild, Mass3DBuild, MassApply,
-    MassApplyInterpTimesWeight, NeumannApply, Poisson1DApply, Poisson1DBuild, Poisson2DApply,
-    Poisson2DBuild, Poisson3DApply, Poisson3DBuild, RobinApply, Scale, ScaleScalar, Vec2Dot,
-    Vec3Dot, Vector2MassApply, Vector2Poisson1DApply, Vector2Poisson2DApply, Vector3MassApply,
-    Vector3Poisson1DApply, Vector3Poisson2DApply, Vector3Poisson3DApply,
+    DiffusionBoundaryApply, Identity, IdentityScalar, Mass1DBuild, Mass2DBuild, Mass3DBuild,
+    MassApply, MassApplyInterpTimesWeight, MassBoundaryApply, NeumannApply, Poisson1DApply,
+    Poisson1DBuild, Poisson2DApply, Poisson2DBuild, Poisson3DApply, Poisson3DBuild, RobinApply,
+    Scale, ScaleBoundaryApply, ScaleScalar, Vec2Dot, Vec3Dot, Vector2MassApply,
+    Vector2Poisson1DApply, Vector2Poisson2DApply, Vector3MassApply, Vector3Poisson1DApply,
+    Vector3Poisson2DApply, Vector3Poisson3DApply,
 };
 pub use operator::{CpuOperator, FieldVector, OperatorBuilder};
 
@@ -283,7 +284,13 @@ pub fn q_function_by_name<T: Scalar>(name: &str) -> ReedResult<Box<dyn QFunction
 /// Exterior (boundary) gallery names accepted by [`q_function_by_name_exterior`].
 ///
 /// Matches libCEED `CeedQFunctionCreateActiveByName` parity for boundary kernels.
-pub static QFUNCTION_EXTERIOR_GALLERY_NAMES: &[&str] = &["NeumannApply", "RobinApply"];
+pub static QFUNCTION_EXTERIOR_GALLERY_NAMES: &[&str] = &[
+    "NeumannApply",
+    "RobinApply",
+    "MassBoundaryApply",
+    "DiffusionBoundaryApply",
+    "ScaleBoundaryApply",
+];
 
 /// Look up an exterior (boundary) gallery QFunction by name (libCEED `CeedQFunctionCreateActiveByName` parity).
 ///
@@ -292,6 +299,11 @@ pub fn q_function_by_name_exterior(name: &str) -> Option<Box<dyn QFunctionTrait<
     match name {
         "NeumannApply" => Some(Box::new(gallery::boundary::NeumannApply::default())),
         "RobinApply" => Some(Box::new(gallery::boundary::RobinApply::default())),
+        "MassBoundaryApply" => Some(Box::new(gallery::boundary::MassBoundaryApply::default())),
+        "DiffusionBoundaryApply" => {
+            Some(Box::new(gallery::boundary::DiffusionBoundaryApply::default()))
+        }
+        "ScaleBoundaryApply" => Some(Box::new(gallery::boundary::ScaleBoundaryApply::default())),
         _ => None,
     }
 }
