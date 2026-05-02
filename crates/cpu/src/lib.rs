@@ -48,7 +48,10 @@ use vector::CpuVector;
 
 pub use composite_operator::{CompositeOperator, CompositeOperatorBorrowed};
 pub use elem_restriction_face::CpuFaceElemRestriction;
-pub use fdm_inverse::{CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator, FDM_DENSE_MAX_N};
+pub use fdm_inverse::{
+    invert_dense_col_major, CpuFdmDenseInverseOperator, CpuFdmJacobiInverseOperator,
+    FDM_DENSE_MAX_N,
+};
 pub use fdm_tensor::{CpuFdmTensorInverseOperator, FdmOperatorKind};
 pub use gallery::{
     DiffusionBoundaryApply, Identity, IdentityScalar, Mass1DBuild, Mass2DBuild, Mass3DBuild,

@@ -44,6 +44,10 @@ impl Default for Identity {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Identity {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Identity")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -143,6 +147,10 @@ impl Default for IdentityScalar {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for IdentityScalar {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Identity to scalar")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -241,6 +249,10 @@ impl Default for Scale {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Scale {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Scale")
+    }
+
     fn context_byte_len(&self) -> usize {
         8
     }
@@ -325,6 +337,10 @@ impl Default for ScaleScalar {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for ScaleScalar {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Scale (scalar)")
+    }
+
     fn context_byte_len(&self) -> usize {
         <Scale as QFunctionTrait<T>>::context_byte_len(&self.inner)
     }
@@ -402,6 +418,10 @@ impl Vector2MassApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vector2MassApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vector2MassApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -509,6 +529,10 @@ impl Vector2Poisson1DApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vector2Poisson1DApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vector2Poisson1DApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -623,6 +647,10 @@ impl Default for Vector2Poisson2DApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vector2Poisson2DApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vector2Poisson2DApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -749,6 +777,10 @@ impl Vector3MassApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vector3MassApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vector3MassApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -858,6 +890,10 @@ impl Vector3Poisson1DApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vector3Poisson1DApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vector3Poisson1DApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -977,6 +1013,10 @@ impl Default for Vector3Poisson2DApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vector3Poisson2DApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vector3Poisson2DApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -1101,6 +1141,10 @@ impl Vector3Poisson3DApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vector3Poisson3DApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vector3Poisson3DApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }

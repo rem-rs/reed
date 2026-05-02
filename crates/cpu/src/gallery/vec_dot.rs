@@ -43,6 +43,10 @@ impl Default for Vec2Dot {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vec2Dot {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vec2Dot")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -110,6 +114,10 @@ impl Default for Vec3Dot {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Vec3Dot {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Vec3Dot")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }

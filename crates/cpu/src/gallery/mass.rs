@@ -36,6 +36,10 @@ impl Default for Mass1DBuild {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Mass1DBuild {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Mass1DBuild")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -106,6 +110,10 @@ impl Default for Mass2DBuild {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Mass2DBuild {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Mass2DBuild")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -166,6 +174,10 @@ impl Default for Mass3DBuild {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for Mass3DBuild {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("Mass3DBuild")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -233,6 +245,10 @@ impl Default for MassApply {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for MassApply {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("MassApply")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }
@@ -334,6 +350,10 @@ impl Default for MassApplyInterpTimesWeight {
 }
 
 impl<T: Scalar> QFunctionTrait<T> for MassApplyInterpTimesWeight {
+    fn gallery_name(&self) -> Option<&str> {
+        Some("MassApplyInterpTimesWeight")
+    }
+
     fn inputs(&self) -> &[QFunctionField] {
         &self.inputs
     }

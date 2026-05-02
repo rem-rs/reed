@@ -82,6 +82,13 @@ pub trait QFunctionTrait<T: Scalar>: Send + Sync {
     fn q_function_category(&self) -> QFunctionCategory {
         QFunctionCategory::Interior
     }
+
+    /// Gallery name for this QFunction, e.g. `"MassApply"`, `"Identity"`.
+    /// Returns `None` for user-defined or non-gallery QFunctions.
+    /// Used by GPU backends to auto-detect device-side QFunction counterparts.
+    fn gallery_name(&self) -> Option<&str> {
+        None
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -131,6 +138,13 @@ pub trait QFunctionTrait<T: Scalar> {
 
     fn q_function_category(&self) -> QFunctionCategory {
         QFunctionCategory::Interior
+    }
+
+    /// Gallery name for this QFunction, e.g. `"MassApply"`, `"Identity"`.
+    /// Returns `None` for user-defined or non-gallery QFunctions.
+    /// Used by GPU backends to auto-detect device-side QFunction counterparts.
+    fn gallery_name(&self) -> Option<&str> {
+        None
     }
 }
 
