@@ -406,6 +406,18 @@ impl<T: Scalar> BasisTrait<T> for LagrangeBasis<T> {
     fn tensor_fdm_1d_data(&self) -> Option<(&[T], &[T], &[T], usize, usize)> {
         Some((&self.interp, &self.grad, &self.weights_1d, self.p, self.q))
     }
+
+    fn face_q_weights(&self, local_face: usize) -> Option<Vec<T>> {
+        crate::face_quadrature::face_quadrature_tensor(self, local_face)
+            .map(|(_, w)| w)
+            .ok()
+    }
+
+    fn face_q_ref(&self, local_face: usize) -> Option<Vec<T>> {
+        crate::face_quadrature::face_quadrature_tensor(self, local_face)
+            .map(|(qr, _)| qr)
+            .ok()
+    }
 }
 
 impl<T: Scalar> LagrangeBasis<T> {

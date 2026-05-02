@@ -45,6 +45,18 @@ pub trait BasisTrait<T: Scalar>: Send + Sync {
     fn tensor_fdm_1d_data(&self) -> Option<(&[T], &[T], &[T], usize, usize)> {
         None
     }
+
+    /// Optional face quadrature weights for the given local face number.
+    /// Default `None` (no per-face quadrature).
+    fn face_q_weights(&self, _local_face: usize) -> Option<Vec<T>> {
+        None
+    }
+
+    /// Optional face quadrature point coordinates (row-major, face-local
+    /// dimension) for the given local face number.  Default `None`.
+    fn face_q_ref(&self, _local_face: usize) -> Option<Vec<T>> {
+        None
+    }
 }
 
 /// WASM variant without Send+Sync bounds.
@@ -69,6 +81,18 @@ pub trait BasisTrait<T: Scalar> {
     /// `(interp_1d, grad_1d, weights_1d, p, q)` where each slice is 1D data.
     /// Default `None`.
     fn tensor_fdm_1d_data(&self) -> Option<(&[T], &[T], &[T], usize, usize)> {
+        None
+    }
+
+    /// Optional face quadrature weights for the given local face number.
+    /// Default `None` (no per-face quadrature).
+    fn face_q_weights(&self, _local_face: usize) -> Option<Vec<T>> {
+        None
+    }
+
+    /// Optional face quadrature point coordinates (row-major, face-local
+    /// dimension) for the given local face number.  Default `None`.
+    fn face_q_ref(&self, _local_face: usize) -> Option<Vec<T>> {
         None
     }
 }

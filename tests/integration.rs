@@ -5002,3 +5002,210 @@ fn test_face_restriction_via_reed_api() {
         .unwrap();
     assert_eq!(gathered, vec![10.0, 20.0, 30.0, 40.0]);
 }
+
+// ---------------------------------------------------------------------------
+// Nonlinear adjoint tests — qfunction with forward-state-dependent transpose
+// ---------------------------------------------------------------------------
+
+/// QFunction with nonlinear forward (squaring) and state-dependent adjoint
+/// (chain rule: d/dx(x²) = 2x). Used to exercise `apply_operator_transpose_with_primal`.
+struct NonlinearSquareQFunction {
+    inputs: Vec<QFunctionField>,
+    outputs: Vec<QFunctionField>,
+}
+
+impl NonlinearSquareQFunction {
+    fn new() -> Self {
+        Self {
+            inputs: vec![QFunctionField {
+                name: "u".into(),
+                num_comp: 1,
+                eval_mode: EvalMode::Interp,
+            }],
+            outputs: vec![QFunctionField {
+                name: "v".into(),
+                num_comp: 1,
+                eval_mode: EvalMode::Interp,
+            }],
+        }
+    }
+}
+
+impl QFunctionTrait<f64> for NonlinearSquareQFunction {
+    fn inputs(&self) -> &[QFunctionField] {
+        &self.inputs
+    }
+    fn outputs(&self) -> &[QFunctionField] {
+        &self.outputs
+    }
+
+    /// Forward: v[q] = u[q] * u[q]
+    fn apply(
+        &self,
+        _ctx: &[u8],
+        q: usize,
+        inputs: &[&[f64]],
+        outputs: &mut [&mut [f64]],
+    ) -> ReedResult<()> {
+        let u = inputs[0];
+        let v = &mut outputs[0];
+        for i in 0..q {
+            v[i] = u[i] * u[i];
+        }
+        Ok(())
+    }
+
+    fn supports_operator_transpose(&self) -> bool {
+        true
+    }
+
+    /// Adjoint at q-points: du[q] += dv[q] * 2 * u_forward[q]
+    /// where `u_forward` is the cached primal input from the most recent forward pass.
+    fn apply_operator_transpose_with_primal(
+        &self,
+        _ctx: &[u8],
+        q: usize,
+        primal_inputs: &[&[f64]],
+        output_cotangents: &[&[f64]],
+        input_cotangents: &mut [&mut [f64]],
+    ) -> ReedResult<()> {
+        let u_fwd = primal_inputs.first().copied().unwrap_or(&[]);
+        let dv = output_cotangents[0];
+        let du = &mut input_cotangents[0];
+        if u_fwd.is_empty() {
+            // No cached primal — verify that the adjoint path still completes
+            // gracefully (identity-like fallback for testing the cache-miss branch).
+            for i in 0..q.min(dv.len()).min(du.len()) {
+                du[i] += dv[i];
+            }
+        } else {
+            for i in 0..q {
+                du[i] += dv[i] * 2.0 * u_fwd[i];
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Nonlinear adjoint: inner-product identity `⟨J(u)·δu, δv⟩ ≈ ⟨δu, A*(u)·δv⟩`
+/// verified via finite-difference Jacobian-vector product.
+#[test]
+fn test_nonlinear_adjoint_square_qfunction_inner_product() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let nelem = 2usize;
+    let p = 2usize;
+    let q = 2usize;
+    let ndofs = nelem + 1; // 3 DOFs for 2 elements with P=1
+    let ind_u: Vec<CeedInt> = vec![0, 1, 1, 2];
+
+    let r_u = reed
+        .elem_restriction(nelem, p, 1, 1, ndofs, &ind_u)
+        .unwrap();
+    let b_u = reed
+        .basis_tensor_h1_lagrange(1, 1, p, q, QuadMode::Gauss)
+        .unwrap();
+
+    let qf = NonlinearSquareQFunction::new();
+    let op = reed
+        .operator_builder()
+        .qfunction(Box::new(qf))
+        .field("u", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .field("v", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    // Nonlinear forward: v = A(u) = u² at q-points, assembled to DOF space.
+    let u = reed.vector_from_slice(&[1.0_f64, 2.0, 3.0]).unwrap();
+    let du_dir = reed.vector_from_slice(&[0.5_f64, -0.3, 0.7]).unwrap();
+    let dv_test = reed.vector_from_slice(&[0.2_f64, -0.5, 0.3]).unwrap();
+
+    let mut au = reed.vector(ndofs).unwrap();
+    op.apply(&*u, &mut *au).unwrap();
+
+    // Finite-difference Jacobian-vector product: J*du ≈ (A(u + ε·du) - A(u)) / ε
+    let eps = 1e-6_f64;
+    let mut u_pert_vals = vec![0.0_f64; ndofs];
+    u.copy_to_slice(&mut u_pert_vals).unwrap();
+    let mut du_vals = vec![0.0_f64; ndofs];
+    du_dir.copy_to_slice(&mut du_vals).unwrap();
+    for i in 0..ndofs {
+        u_pert_vals[i] += eps * du_vals[i];
+    }
+    let u_pert = reed.vector_from_slice(&u_pert_vals).unwrap();
+    let mut au_pert = reed.vector(ndofs).unwrap();
+    op.apply(&*u_pert, &mut *au_pert).unwrap();
+
+    let mut fd_jvp = reed.vector(ndofs).unwrap();
+    {
+        let dst = fd_jvp.as_mut_slice();
+        let a0 = au.as_slice();
+        let a1 = au_pert.as_slice();
+        for i in 0..ndofs {
+            dst[i] = (a1[i] - a0[i]) / eps;
+        }
+    }
+
+    // Adjoint at primal u: A*(u)(dv_test)
+    // This uses the cached forward q-inputs from the `op.apply(u, au)` call above.
+    let mut adj = reed.vector(ndofs).unwrap();
+    op.apply_with_transpose(OperatorTransposeRequest::Adjoint, &*dv_test, &mut *adj)
+        .unwrap();
+
+    // Verify inner-product identity:
+    //   ⟨J(u)·du, dv⟩ = ⟨du, A*(u)·dv⟩
+    let mut lhs = 0.0_f64;
+    let mut rhs = 0.0_f64;
+    {
+        let fd = fd_jvp.as_slice();
+        let dv = dv_test.as_slice();
+        let du = du_dir.as_slice();
+        let adj_s = adj.as_slice();
+        for i in 0..ndofs {
+            lhs += fd[i] * dv[i];
+            rhs += du[i] * adj_s[i];
+        }
+    }
+
+    let tol = 1e-7_f64;
+    assert!(
+        (lhs - rhs).abs() < tol,
+        "nonlinear adjoint inner-product identity failed: |lhs - rhs| = {:.3e}, lhs = {:.8e}, rhs = {:.8e}",
+        (lhs - rhs).abs(),
+        lhs,
+        rhs
+    );
+}
+
+/// Nonlinear adjoint: adjoint called before any forward pass (cache-miss branch).
+/// When no primal inputs are cached, the QFunction should still complete gracefully.
+#[test]
+fn test_nonlinear_adjoint_cache_miss_fallback() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let nelem = 1usize;
+    let p = 2usize;
+    let q = 2usize;
+    let ndofs = 2usize;
+    let ind_u: Vec<CeedInt> = vec![0, 1];
+
+    let r_u = reed
+        .elem_restriction(nelem, p, 1, 1, ndofs, &ind_u)
+        .unwrap();
+    let b_u = reed
+        .basis_tensor_h1_lagrange(1, 1, p, q, QuadMode::Gauss)
+        .unwrap();
+
+    let qf = NonlinearSquareQFunction::new();
+    let op = reed
+        .operator_builder()
+        .qfunction(Box::new(qf))
+        .field("u", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .field("v", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    // Call adjoint WITHOUT a prior forward pass — the cache is empty.
+    let dv = reed.vector_from_slice(&[0.5_f64, 1.0]).unwrap();
+    let mut adj = reed.vector(ndofs).unwrap();
+    let result = op.apply_with_transpose(OperatorTransposeRequest::Adjoint, &*dv, &mut *adj);
+    assert!(result.is_ok(), "adjoint should succeed even without cached primal; got {:?}", result.err());
+}
