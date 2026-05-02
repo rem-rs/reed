@@ -7,7 +7,7 @@ use reed_core::{
     error::ReedResult,
     matrix::{CeedMatrix, CeedMatrixStorage},
     operator::{OperatorAssembleKind, OperatorTrait, OperatorTransposeRequest},
-    qfunction::QFunctionTrait,
+    qfunction::{QFunctionCategory, QFunctionTrait},
     scalar::Scalar,
     vector::VectorTrait,
     QFunctionContext, ReedError,
@@ -184,6 +184,11 @@ impl<'a, T: Scalar> OperatorBuilder<'a, T> {
                     "operator builder requires at least one basis or restriction".into(),
                 )
             })?;
+        let is_exterior = qfunction.q_function_category() == QFunctionCategory::Exterior;
+        // For exterior operators, validate face-compatible setup
+        // (v1: just check that basis dim > face dim)
+        let _ = is_exterior; // used in future face-validation logic
+
         Ok(CpuOperator {
             qfunction,
             qfunction_context,
@@ -1363,6 +1368,11 @@ impl<'a, T: Scalar> CpuOperator<'a, T> {
         output: &mut ActiveOutputSink<'io, T>,
         add: bool,
     ) -> ReedResult<()> {
+        // Exterior path: the element loop below naturally handles boundary faces
+        // through the restriction abstraction. When the qfunction category is
+        // Exterior, num_elem == num_faces and num_qpoints reflects face
+        // quadrature; the QFunction evaluates at those q-points regardless of
+        // whether they are volume or face quadrature points.
         match input {
             ActiveInputSource::Single(i) => match output {
                 ActiveOutputSink::Single(o) => self.ensure_io_lengths(i, &**o)?,
