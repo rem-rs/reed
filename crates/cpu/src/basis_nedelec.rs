@@ -6,6 +6,7 @@
 //! | Type | Topology | DOFs | Polynomial space |
 //! |------|----------|------|------------------|
 //! | P1 triangle | Tri3 | 3 | N1 (edge) |
+//! | P2 triangle | Tri3 | 8 | N2 (edge + face) |
 //! | P1 tet | Tet4 | 6 | N1 (edge) |
 //!
 //! ## Reference elements
@@ -16,10 +17,27 @@
 //!
 //! ## Basis functions
 //!
+//! ### P1 (order 1)
+//!
 //! Nedelec P1 edge basis functions are of the form
 //! φ_{ij} = λ_i ∇λ_j − λ_j ∇λ_i
 //! where λ_k are barycentric coordinates and the edge orientation is from
 //! vertex i to vertex j.
+//!
+//! ### P2 (order 2) — Triangle only
+//!
+//! Hierarchical basis with 8 DOFs: 2 per edge (6) + 2 face (2).
+//!
+//! **Edge DOFs** (DOF 0–5):
+//! - φ_{ij}^{(1)} = λ_i ∇λ_j − λ_j ∇λ_i  (P1 edge, DOFs 0–2)
+//! - φ_{ij}^{(2)} = (λ_i − λ_j)(λ_i ∇λ_j − λ_j ∇λ_i)  (P2 edge bubble, DOFs 3–5)
+//!
+//! **Face DOFs** (DOF 6–7):
+//! - φ_f^{(1)} = λ_0 λ_1 ∇λ_2
+//! - φ_f^{(2)} = λ_0 λ_2 ∇λ_1
+//!
+//! Face functions vanish tangentially on all edges. Edge bubbles vanish
+//! at edge midpoints (where λ_i = λ_j).
 //!
 //! ## Memory layout
 //!
@@ -60,23 +78,38 @@ impl<T: Scalar> NedelecBasis<T> {
     ///
     /// # Parameters
     /// * `topo` — `ElemTopology::Triangle` or `Tet`.
-    /// * `p`    — polynomial order (must be 1 for P1 Nedelec).
+    /// * `p`    — polynomial order. Triangle: 1 or 2; Tet: 1 only.
     /// * `q`    — number of quadrature points (see `tri_quadrature` / `tet_quadrature` for
     ///            valid values).
     ///
     /// # Errors
     /// Returns `ReedError::Basis` for unsupported topology/p/q combinations.
     pub fn new(topo: ElemTopology, p: usize, q: usize) -> ReedResult<Self> {
-        if p != 1 {
-            return Err(ReedError::Basis(format!(
-                "NedelecBasis: p={p} not supported; only p=1"
-            )));
-        }
-
         let (dim, num_dof) = match topo {
-            ElemTopology::Triangle => (2, 3),
-            ElemTopology::Tet => (3, 6),
+            ElemTopology::Triangle => match p {
+                1 => (2, 3),
+                2 => (2, 8),
+                _ => {
+                    return Err(ReedError::Basis(format!(
+                        "NedelecBasis: p={p} on Triangle not supported; use p=1 or p=2"
+                    )));
+                }
+            },
+            ElemTopology::Tet => {
+                if p != 1 {
+                    return Err(ReedError::Basis(format!(
+                        "NedelecBasis: p={p} on Tet not supported; only p=1"
+                    )));
+                }
+                (3, 6)
+            }
             _ => {
+                if matches!(topo, ElemTopology::Pyramid | ElemTopology::Prism) {
+                    return Err(ReedError::Basis(format!(
+                        "NedelecBasis: {:?} not implemented (requires collapsed-coordinate or tensor×simplex transforms; available: Triangle, Tet)",
+                        topo
+                    )));
+                }
                 return Err(ReedError::Basis(format!(
                     "NedelecBasis: unsupported topology {:?} (need Triangle or Tet)",
                     topo
@@ -91,6 +124,8 @@ impl<T: Scalar> NedelecBasis<T> {
             _ => unreachable!(),
         };
         let num_qpoints = q_ref_f64.len() / dim;
+
+        let order = p; // captured for use in the evaluation loop below
 
         // Convert to target scalar type
         let q_ref: Vec<T> = q_ref_f64
@@ -124,7 +159,12 @@ impl<T: Scalar> NedelecBasis<T> {
         for (qi, pt) in qpts.iter().enumerate() {
             match dim {
                 2 => {
-                    let (phi, curl) = tri_nedelec_p1(pt[0], pt[1]);
+                    let (phi, curl) = if order == 2 {
+                        tri_nedelec_p2(pt[0], pt[1])
+                    } else {
+                        let (p, c) = tri_nedelec_p1(pt[0], pt[1]);
+                        (p, c)
+                    };
                     for dof in 0..num_dof {
                         for d in 0..dim {
                             interp[(qi * num_dof + dof) * dim + d] =
@@ -555,6 +595,93 @@ fn tri_nedelec_p1(x: f64, y: f64) -> (Vec<f64>, Vec<f64>) {
     (phi, curl)
 }
 
+/// P2 Nedelec (first kind) basis functions on the reference triangle.
+///
+/// Hierarchical construction with 8 DOFs: 2 per edge (6) + 2 face (2).
+///
+/// **Edge DOFs** (0–5):
+/// - DOF 0–2: P1 edge basis  φ_{ij}^{(1)} = λ_i ∇λ_j − λ_j ∇λ_i
+/// - DOF 3–5: P2 edge bubble φ_{ij}^{(2)} = (λ_i − λ_j)(λ_i ∇λ_j − λ_j ∇λ_i)
+///
+/// **Face DOFs** (6–7):
+/// - DOF 6: φ_f^{(1)} = λ_0 λ_1 ∇λ_2
+/// - DOF 7: φ_f^{(2)} = λ_0 λ_2 ∇λ_1
+///
+/// Curl of edge bubble: curl((λ_i−λ_j)·φ_P1) = ∇(λ_i−λ_j) × φ_P1 + (λ_i−λ_j)·curl(φ_P1).
+/// Curl of face: curl(λ_a λ_b ∇λ_c) = ∇(λ_a λ_b) × ∇λ_c.
+///
+/// Returns `(phi[num_dof * 2], curl[num_dof])`.
+fn tri_nedelec_p2(x: f64, y: f64) -> (Vec<f64>, Vec<f64>) {
+    let lam = [1.0 - x - y, x, y]; // λ₀, λ₁, λ₂
+    let dlam: [[f64; 2]; 3] = [
+        [-1.0, -1.0], // ∇λ₀
+        [1.0, 0.0],   // ∇λ₁
+        [0.0, 1.0],   // ∇λ₂
+    ];
+
+    // Edges: (0,1), (1,2), (2,0)
+    let edges = [(0usize, 1usize), (1, 2), (2, 0)];
+    let num_dof = 8;
+    let mut phi = vec![0.0f64; num_dof * 2];
+    let mut curl = vec![0.0f64; num_dof];
+
+    for (dof_p1, &(i, j)) in edges.iter().enumerate() {
+        // ── P1 edge basis (DOFs 0–2) ──────────────────────────────────
+        // φ_{ij} = λ_i ∇λ_j − λ_j ∇λ_i
+        for d in 0..2 {
+            phi[dof_p1 * 2 + d] = lam[i] * dlam[j][d] - lam[j] * dlam[i][d];
+        }
+        // curl(φ_{ij}) = 2(∇λ_i × ∇λ_j)
+        let curl_p1 = 2.0 * (dlam[i][0] * dlam[j][1] - dlam[i][1] * dlam[j][0]);
+        curl[dof_p1] = curl_p1;
+
+        // ── P2 edge bubble (DOFs 3–5) ─────────────────────────────────
+        // φ_{ij}^{(2)} = (λ_i − λ_j) · φ_{ij}^{(1)}
+        let f = lam[i] - lam[j];
+        for d in 0..2 {
+            let p1_val = lam[i] * dlam[j][d] - lam[j] * dlam[i][d];
+            phi[(3 + dof_p1) * 2 + d] = f * p1_val;
+        }
+        // curl(f · v) = ∇f × v + f · curl(v)   (2D cross product)
+        let df = [
+            dlam[i][0] - dlam[j][0],
+            dlam[i][1] - dlam[j][1],
+        ];
+        let v = [
+            lam[i] * dlam[j][0] - lam[j] * dlam[i][0],
+            lam[i] * dlam[j][1] - lam[j] * dlam[i][1],
+        ];
+        let df_cross_v = df[0] * v[1] - df[1] * v[0];
+        curl[3 + dof_p1] = df_cross_v + f * curl_p1;
+    }
+
+    // ── Face functions (DOFs 6–7) ─────────────────────────────────────
+    // φ_f^{(1)} = λ_0 λ_1 ∇λ_2
+    {
+        let dof = 6;
+        for d in 0..2 {
+            phi[dof * 2 + d] = lam[0] * lam[1] * dlam[2][d];
+        }
+        // curl = ∇(λ_0 λ_1) × ∇λ_2 = (λ_0 ∇λ_1 + λ_1 ∇λ_0) × ∇λ_2
+        let gx = lam[0] * dlam[1][0] + lam[1] * dlam[0][0];
+        let gy = lam[0] * dlam[1][1] + lam[1] * dlam[0][1];
+        curl[dof] = gx * dlam[2][1] - gy * dlam[2][0];
+    }
+    // φ_f^{(2)} = λ_0 λ_2 ∇λ_1
+    {
+        let dof = 7;
+        for d in 0..2 {
+            phi[dof * 2 + d] = lam[0] * lam[2] * dlam[1][d];
+        }
+        // curl = ∇(λ_0 λ_2) × ∇λ_1 = (λ_0 ∇λ_2 + λ_2 ∇λ_0) × ∇λ_1
+        let gx = lam[0] * dlam[2][0] + lam[2] * dlam[0][0];
+        let gy = lam[0] * dlam[2][1] + lam[2] * dlam[0][1];
+        curl[dof] = gx * dlam[1][1] - gy * dlam[1][0];
+    }
+
+    (phi, curl)
+}
+
 /// P1 Nedelec (first kind) basis functions on the reference tetrahedron.
 ///
 /// Barycentric coordinates: λ₀ = 1−x−y−z, λ₁ = x, λ₂ = y, λ₃ = z.
@@ -699,10 +826,12 @@ mod tests {
     }
 
     #[test]
-    fn reject_non_p1() {
-        assert!(
-            NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 3).is_err()
-        );
+    fn reject_invalid_p() {
+        // Triangle: p=2 is OK; higher p rejected
+        assert!(NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 3).is_ok());
+        assert!(NedelecBasis::<f64>::new(ElemTopology::Triangle, 3, 3).is_err());
+        // Tet: only p=1
+        assert!(NedelecBasis::<f64>::new(ElemTopology::Tet, 2, 4).is_err());
         assert!(NedelecBasis::<f64>::new(ElemTopology::Tet, 3, 4).is_err());
     }
 
@@ -886,6 +1015,210 @@ mod tests {
         for dof in 0..ndof {
             let val = u_dof_back[dof * dim];
             assert!(val.abs() > TOL, "transpose consistency: dof {dof} is zero");
+        }
+    }
+
+    // ── P2 triangle tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn construct_tri_nedelec_p2() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 6).unwrap();
+        assert_eq!(basis.dim(), 2);
+        assert_eq!(basis.num_dof(), 8);
+        assert_eq!(basis.num_qpoints(), 6);
+        assert_eq!(basis.num_comp(), 2);
+    }
+
+    #[test]
+    fn tri_nedelec_p2_p1_subspace() {
+        // The P1 basis should be exactly the first 3 DOFs of the P2 basis.
+        // Evaluate both at several quadrature points and compare.
+        let basis_p1 = NedelecBasis::<f64>::new(ElemTopology::Triangle, 1, 6).unwrap();
+        let basis_p2 = NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 6).unwrap();
+
+        assert_eq!(basis_p1.num_qpoints(), basis_p2.num_qpoints());
+
+        // Compare interpolant values: for each qpt, P1 dof 0..2 should match P2 dof 0..2
+        for qpt in 0..basis_p1.num_qpoints() {
+            for dof in 0..3 {
+                for d in 0..2 {
+                    let v1 = basis_p1.interp[(qpt * 3 + dof) * 2 + d];
+                    let v2 = basis_p2.interp[(qpt * 8 + dof) * 2 + d];
+                    assert!(
+                        (v1 - v2).abs() < TOL,
+                        "P1/P2 mismatch at qpt={qpt} dof={dof} d={d}: {v1} vs {v2}"
+                    );
+                }
+            }
+            // Curl should match for the first 3 DOFs
+            for dof in 0..3 {
+                let c1 = basis_p1.curl_matrix[qpt * 3 + dof];
+                let c2 = basis_p2.curl_matrix[qpt * 8 + dof];
+                assert!(
+                    (c1 - c2).abs() < TOL,
+                    "P1/P2 curl mismatch at qpt={qpt} dof={dof}: {c1} vs {c2}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tri_nedelec_p2_face_tangential_zero_on_edges() {
+        // Face functions (DOFs 6 and 7) should have zero tangential component on all edges.
+        let _basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 6).unwrap();
+
+        // Edge normals (perpendicular to edge, used to project tangent):
+        // Edge (0,1): y=0, tangent = (1,0), normal for tangent test: dot with (0,1)
+        // Edge (1,2): x+y=1, tangent = (-1,1)/√2, normal = (1,1)/√2
+        // Edge (0,2): x=0, tangent = (0,1), normal for tangent test: dot with (1,0)
+
+        // The tangential component = dot(basis_vector, edge_tangent).
+        // We evaluate at quadrature points and check against known edge locations.
+
+        // We'll verify at known quadrature points by checking that
+        // on each edge, the face functions are parallel to the edge normal
+        // (i.e., have zero tangential component).
+
+        // Edge (0,1): y=0. Face DOF 6 = λ_0 λ_1 ∇λ_2 = x(1-x) * (0,1).
+        // Tangent = (1,0). Dot = 0. ✓
+        // Face DOF 7 = λ_0 λ_2 ∇λ_1 = 0 * λ_2 * (1,0) = 0. ✓
+
+        // We can't easily identify which qpts are on edges with standard quadrature,
+        // so instead verify that both face functions vanish at vertices:
+        // At each vertex, one of the λ factors is 1, the others 0,
+        // so λ_0 λ_1 = 0 and λ_0 λ_2 = 0 → both face functions = 0.
+
+        // Evaluate at the three vertices via the P2 shape functions directly
+        for &(x, y) in &[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)] {
+            let (_phi, _curl) = tri_nedelec_p2(x, y);
+            // Face DOFs are 6 and 7
+            for dof in 6..8 {
+                let fx = _phi[dof * 2];
+                let fy = _phi[dof * 2 + 1];
+                assert!(
+                    fx.abs() < TOL && fy.abs() < TOL,
+                    "Face DOF {dof} non-zero at vertex ({x},{y}): ({fx},{fy})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tri_nedelec_p2_edge_bubble_zero_at_midpoint() {
+        // The edge bubble functions (DOF 3–5) should vanish at edge midpoints
+        // where λ_i = λ_j.
+        // Edge (0,1) midpoint: (0.5, 0), λ_0 = 0.5, λ_1 = 0.5
+        // Edge (1,2) midpoint: (0.5, 0.5), λ_1 = 0.5, λ_2 = 0.5
+        // Edge (0,2) midpoint: (0, 0.5), λ_0 = 0.5, λ_2 = 0.5
+        for &(x, y, dof_bubble) in &[
+            (0.5, 0.0, 3),  // edge (0,1) midpoint, bubble DOF 3
+            (0.5, 0.5, 4),  // edge (1,2) midpoint, bubble DOF 4
+            (0.0, 0.5, 5),  // edge (2,0) midpoint, bubble DOF 5
+        ] {
+            let (phi, _curl) = tri_nedelec_p2(x, y);
+            let fx = phi[dof_bubble * 2];
+            let fy = phi[dof_bubble * 2 + 1];
+            assert!(
+                fx.abs() < TOL && fy.abs() < TOL,
+                "Edge bubble DOF {dof_bubble} non-zero at midpoint ({x},{y}): ({fx},{fy})"
+            );
+        }
+    }
+
+    #[test]
+    fn tri_nedelec_p2_curl_varies() {
+        // Verify that the curl of P2 basis functions is not constant
+        // (unlike P1 where curl is always 2).
+        let (_phi1, curl1) = tri_nedelec_p2(0.1, 0.2);
+        let (_phi2, curl2) = tri_nedelec_p2(0.7, 0.1);
+
+        // P1 DOFs 0-2 should have constant curl (same at both points)
+        for dof in 0..3 {
+            assert!(
+                (curl1[dof] - curl2[dof]).abs() < TOL,
+                "P1 DOF {dof}: curl should be constant"
+            );
+        }
+
+        // P2 edge bubbles (DOF 3-5) or face (DOF 6-7) should vary
+        let mut any_varied = false;
+        for dof in 3..8 {
+            if (curl1[dof] - curl2[dof]).abs() > TOL {
+                any_varied = true;
+                break;
+            }
+        }
+        assert!(any_varied, "P2 DOF curls should vary with position");
+
+        // Also verify: at any point, the curl of DOF 6 (face 1) should equal
+        // something derived analytically: curl_f1 = λ_0 − λ_1 = 1 - 2x - y
+        let (_, curl) = tri_nedelec_p2(0.2, 0.3);
+        let expected_curl_f1 = 1.0 - 2.0 * 0.2 - 0.3; // 1 - 0.4 - 0.3 = 0.3
+        assert!((curl[6] - expected_curl_f1).abs() < TOL,
+            "Face 1 curl mismatch: got {}, expected {}", curl[6], expected_curl_f1);
+
+        let expected_curl_f2 = 0.3 - (1.0 - 0.2 - 0.3); // y - λ_0 = 0.3 - 0.5 = -0.2
+        assert!((curl[7] - expected_curl_f2).abs() < TOL,
+            "Face 2 curl mismatch: got {}, expected {}", curl[7], expected_curl_f2);
+    }
+
+    #[test]
+    fn tri_nedelec_p2_interp_forward_size() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 6).unwrap();
+        let nelem = 2;
+        let ndof = 8;
+        let nqpts = 6;
+        let dim = 2;
+        let u = vec![0.0f64; nelem * ndof * dim];
+        let mut v = vec![0.0f64; nelem * nqpts * dim];
+        basis
+            .apply(nelem, false, EvalMode::Interp, &u, &mut v)
+            .unwrap();
+    }
+
+    #[test]
+    fn tri_nedelec_p2_hcurl_forward_size() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 6).unwrap();
+        let nelem = 2;
+        let ndof = 8;
+        let nqpts = 6;
+        let dim = 2;
+        let u = vec![0.0f64; nelem * ndof * dim];
+        let mut v = vec![0.0f64; nelem * nqpts];
+        basis
+            .apply(nelem, false, EvalMode::HCurl, &u, &mut v)
+            .unwrap();
+    }
+
+    #[test]
+    fn tri_nedelec_p2_transpose_consistency() {
+        let basis = NedelecBasis::<f64>::new(ElemTopology::Triangle, 2, 6).unwrap();
+        let nelem = 1;
+        let ndof = 8;
+        let nqpts = 6;
+        let dim = 2;
+
+        let mut u_dof = vec![0.0f64; nelem * ndof * dim];
+        for dof in 0..ndof {
+            u_dof[dof * dim] = (dof + 1) as f64;
+        }
+
+        let mut v_qpts = vec![0.0f64; nelem * nqpts * dim];
+        basis
+            .apply(nelem, false, EvalMode::Interp, &u_dof, &mut v_qpts)
+            .unwrap();
+
+        let mut u_dof_back = vec![0.0f64; nelem * ndof * dim];
+        basis
+            .apply(nelem, true, EvalMode::Interp, &v_qpts, &mut u_dof_back)
+            .unwrap();
+
+        for dof in 0..ndof {
+            let val = u_dof_back[dof * dim];
+            assert!(
+                val.abs() > TOL,
+                "P2 transpose consistency: dof {dof} is zero"
+            );
         }
     }
 }

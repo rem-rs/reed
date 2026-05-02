@@ -1,11 +1,12 @@
 //! Raviart-Thomas H(div) basis functions for triangles and tetrahedra.
 //!
-//! Implements [`BasisTrait`] for the lowest-order Raviart-Thomas (RT0) basis on
+//! Implements [`BasisTrait`] for the lowest-order Raviart-Thomas (RT0/R1) basis on
 //! simplex reference elements:
 //!
 //! | Type | Topology | DOFs | Polynomial space |
 //! |------|----------|------|------------------|
-//! | P0 triangle | Tri3 | 3 | RT0 (face) |
+//! | P0 triangle | Tri3 | 3 | RT0 (edge) |
+//! | P1 triangle | Tri3 | 8 | RT1 (edge + face) |
 //! | P0 tet | Tet4 | 4 | RT0 (face) |
 //!
 //! ## Reference elements
@@ -16,12 +17,27 @@
 //!
 //! ## Basis functions
 //!
+//! ### RT0 (order 0)
+//!
 //! RT0 basis functions on a simplex K are of the form
 //! ψ_i = (x − x_i) / (d · |K|)
 //! where x_i is vertex i and d is the spatial dimension.
 //!
 //! Each ψ_i has unit normal flux through the face/edge opposite vertex i and
 //! zero flux through all other faces/edges.
+//!
+//! ### RT1 (order 1) — Triangle only
+//!
+//! Hierarchical basis with 8 DOFs: 2 per edge (6) + 2 interior (2).
+//!
+//! **Edge DOFs** (0–5):
+//! - ψ_k^{(0)} = x − x_k  (RT0, DOFs 0–2, constant normal flux on edge k)
+//! - ψ_k^{(1)} = (λ_i − λ_j) · ψ_k^{(0)}  (linear moment, DOFs 3–5)
+//!   where i, j are the vertices adjacent to edge k (the ones NOT opposite).
+//!
+//! **Interior DOFs** (6–7): rot90 of Nédélec face functions (zero normal flux on edges)
+//! - ψ_int^{(1)} = rot90(λ_0 λ_1 ∇λ_2) = (−λ_0 λ_1, 0)
+//! - ψ_int^{(2)} = rot90(λ_0 λ_2 ∇λ_1) = (0, λ_0 λ_2)
 //!
 //! ## Memory layout
 //!
@@ -41,7 +57,7 @@ use super::basis_simplex::{tet_quadrature, tri_quadrature};
 #[cfg(feature = "parallel")]
 const PAR_MIN_ELEMS_PER_TASK: usize = 128;
 
-/// H(div) Raviart-Thomas (RT0) basis on triangles and tetrahedra.
+/// H(div) Raviart-Thomas (RT0/RT1) basis on triangles and tetrahedra.
 pub struct RaviartThomasBasis<T: Scalar> {
     dim: usize,
     num_dof: usize,
@@ -61,23 +77,38 @@ impl<T: Scalar> RaviartThomasBasis<T> {
     ///
     /// # Parameters
     /// * `topo` — `ElemTopology::Triangle` or `Tet`.
-    /// * `p`    — polynomial order (must be 0 for RT0).
+    /// * `p`    — polynomial order. Triangle: 0 (RT0) or 1 (RT1); Tet: 0 only.
     /// * `q`    — number of quadrature points (see `tri_quadrature` / `tet_quadrature` for
     ///            valid values).
     ///
     /// # Errors
     /// Returns `ReedError::Basis` for unsupported topology/p/q combinations.
     pub fn new(topo: ElemTopology, p: usize, q: usize) -> ReedResult<Self> {
-        if p != 0 {
-            return Err(ReedError::Basis(format!(
-                "RaviartThomasBasis: p={p} not supported; only p=0 (RT0)"
-            )));
-        }
-
         let (dim, num_dof) = match topo {
-            ElemTopology::Triangle => (2, 3),
-            ElemTopology::Tet => (3, 4),
+            ElemTopology::Triangle => match p {
+                0 => (2, 3),
+                1 => (2, 8),
+                _ => {
+                    return Err(ReedError::Basis(format!(
+                        "RaviartThomasBasis: p={p} on Triangle not supported; use p=0 (RT0) or p=1 (RT1)"
+                    )));
+                }
+            },
+            ElemTopology::Tet => {
+                if p != 0 {
+                    return Err(ReedError::Basis(format!(
+                        "RaviartThomasBasis: p={p} on Tet not supported; only p=0 (RT0)"
+                    )));
+                }
+                (3, 4)
+            }
             _ => {
+                if matches!(topo, ElemTopology::Pyramid | ElemTopology::Prism) {
+                    return Err(ReedError::Basis(format!(
+                        "RaviartThomasBasis: {:?} not implemented (requires collapsed-coordinate or tensor×simplex transforms; available: Triangle, Tet)",
+                        topo
+                    )));
+                }
                 return Err(ReedError::Basis(format!(
                     "RaviartThomasBasis: unsupported topology {:?} (need Triangle or Tet)",
                     topo
@@ -92,6 +123,8 @@ impl<T: Scalar> RaviartThomasBasis<T> {
             _ => unreachable!(),
         };
         let num_qpoints = q_ref_f64.len() / dim;
+
+        let order = p; // captured for use in the evaluation loop below
 
         // Convert to target scalar type
         let q_ref: Vec<T> = q_ref_f64
@@ -121,7 +154,12 @@ impl<T: Scalar> RaviartThomasBasis<T> {
         for (qi, pt) in qpts.iter().enumerate() {
             match dim {
                 2 => {
-                    let (phi, div) = tri_rt0(pt[0], pt[1]);
+                    let (phi, div) = if order == 1 {
+                        tri_rt1(pt[0], pt[1])
+                    } else {
+                        let (p, d) = tri_rt0(pt[0], pt[1]);
+                        (p, d)
+                    };
                     for dof in 0..num_dof {
                         for d in 0..dim {
                             interp[(qi * num_dof + dof) * dim + d] =
@@ -455,6 +493,113 @@ fn tri_rt0(x: f64, y: f64) -> (Vec<f64>, Vec<f64>) {
     (phi, div)
 }
 
+/// RT1 basis functions on the reference triangle (8 DOFs).
+///
+/// Hierarchical construction extending RT0 with linear edge moments and
+/// divergence-free interior bubble functions.
+///
+/// **Edge DOFs** (0–5):
+/// - DOF 0–2: RT0 edge basis  ψ_k^{(0)} = x − x_k  (constant normal flux)
+/// - DOF 3–5: linear edge moments  ψ_k^{(1)} = (λ_i − λ_j) · ψ_k^{(0)}
+///   where i, j are the vertices of edge k.
+///
+///   Edge 0 (opposite v0, between v1 and v2): ψ_0^{(1)} = (x−y)·(x, y)
+///   Edge 1 (opposite v1, between v0 and v2): ψ_1^{(1)} = (2y+x−1)·(x−1, y)
+///   Edge 2 (opposite v2, between v0 and v1): ψ_2^{(1)} = (1−2x−y)·(x, y−1)
+///
+/// **Interior DOFs** (6–7):
+/// - DOF 6: ψ_int^{(1)} = rot90(λ_0 λ_1 ∇λ_2) = (−(1−x−y)x, 0)
+/// - DOF 7: ψ_int^{(2)} = rot90(λ_0 λ_2 ∇λ_1) = (0, (1−x−y)y)
+///
+/// Returns `(phi[num_dof * 2], div[num_dof])`.
+fn tri_rt1(x: f64, y: f64) -> (Vec<f64>, Vec<f64>) {
+    let verts: [[f64; 2]; 3] = [
+        [0.0, 0.0], // x₀
+        [1.0, 0.0], // x₁
+        [0.0, 1.0], // x₂
+    ];
+    let num_dof = 8;
+    let dim = 2;
+
+    let lam = [1.0 - x - y, x, y]; // λ₀, λ₁, λ₂
+
+    let mut phi = vec![0.0f64; num_dof * dim];
+    let mut div = vec![0.0f64; num_dof];
+
+    // ── RT0 edge functions (DOFs 0–2) ───────────────────────────────────
+    // ψ_k = x − x_k; div = 2
+    for dof in 0..3 {
+        for d in 0..dim {
+            phi[dof * dim + d] = [x, y][d] - verts[dof][d];
+        }
+        div[dof] = 2.0;
+    }
+
+    // ── Linear edge moments (DOFs 3–5) ──────────────────────────────────
+    // ψ_k^{(1)} = (λ_i − λ_j) · ψ_k^{(0)} where edge k connects vertices i,j
+    // Edge 0: connects v1=(1,0) to v2=(0,1), i=1, j=2
+    //   factor = λ_1 − λ_2 = x − y
+    {
+        let dof = 3;
+        let f = lam[1] - lam[2]; // x - y
+        for d in 0..dim {
+            let rt0_val = [x, y][d] - verts[0][d]; // ψ_0^{(0)} = (x, y)
+            phi[dof * dim + d] = f * rt0_val;
+        }
+        // div = 3(x − y)
+        div[dof] = 3.0 * (x - y);
+    }
+    // Edge 1: connects v0=(0,0) to v2=(0,1), i=0, j=2
+    //   factor = λ_0 − λ_2 = (1-x-y) − y = 1 − x − 2y
+    //   Wait, that gives 1-x-2y. But I computed 2y+x-1 earlier. Let me verify:
+    //   ψ_1^{(0)} = (x-1, y)
+    //   f = λ_2 - λ_0 = y - (1-x-y) = 2y + x - 1
+    //   Actually I had ψ_1^{(1)} = (2y+x-1)*(x-1, y)
+    //   So the factor is λ_2 - λ_0 = x + 2y - 1
+    {
+        let dof = 4;
+        let f = lam[2] - lam[0]; // y - (1-x-y) = x + 2y - 1
+        for d in 0..dim {
+            let rt0_val = [x, y][d] - verts[1][d]; // ψ_1^{(0)} = (x-1, y)
+            phi[dof * dim + d] = f * rt0_val;
+        }
+        // div = 3(x + 2y − 1)
+        div[dof] = 3.0 * (x + 2.0 * y - 1.0);
+    }
+    // Edge 2: connects v0=(0,0) to v1=(1,0), i=0, j=1
+    //   factor = λ_0 − λ_1 = (1-x-y) − x = 1 − 2x − y
+    {
+        let dof = 5;
+        let f = lam[0] - lam[1]; // 1 - x - y - x = 1 - 2x - y
+        for d in 0..dim {
+            let rt0_val = [x, y][d] - verts[2][d]; // ψ_2^{(0)} = (x, y-1)
+            phi[dof * dim + d] = f * rt0_val;
+        }
+        // div = 3(1 − 2x − y)
+        div[dof] = 3.0 * (1.0 - 2.0 * x - y);
+    }
+
+    // ── Interior bubble functions (DOFs 6–7) ────────────────────────────
+    // DOF 6: ψ_int^{(1)} = rot90(λ_0 λ_1 ∇λ_2) = (−(1−x−y)x, 0)
+    {
+        let dof = 6;
+        phi[dof * dim] = -(1.0 - x - y) * x; // x-component
+        phi[dof * dim + 1] = 0.0; // y-component
+        // div = ∂/∂x(−(1−x−y)x) = −(1−x−y) + x = 2x + y − 1
+        div[dof] = 2.0 * x + y - 1.0;
+    }
+    // DOF 7: ψ_int^{(2)} = rot90(λ_0 λ_2 ∇λ_1) = (0, (1−x−y)y)
+    {
+        let dof = 7;
+        phi[dof * dim] = 0.0; // x-component
+        phi[dof * dim + 1] = (1.0 - x - y) * y; // y-component
+        // div = ∂/∂y((1−x−y)y) = (1−x−y) − y = 1 − x − 2y
+        div[dof] = 1.0 - x - 2.0 * y;
+    }
+
+    (phi, div)
+}
+
 /// RT0 basis functions on the reference tetrahedron.
 ///
 /// Basis: ψ_i = (x − x_i) / (d · |T|) with d=3, |T|=1/6 → ψ_i = 2(x − x_i).
@@ -642,8 +787,13 @@ mod tests {
     }
 
     #[test]
-    fn reject_non_p0() {
-        assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 1, 3).is_err());
+    fn reject_invalid_p() {
+        // Triangle: p=0 (RT0) and p=1 (RT1) are OK; higher p rejected
+        assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 0, 3).is_ok());
+        assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 1, 3).is_ok());
+        assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 2, 3).is_err());
+        // Tet: only p=0
+        assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).is_err());
         assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 2, 4).is_err());
     }
 
@@ -912,6 +1062,168 @@ mod tests {
             assert!(
                 val.abs() > TOL,
                 "hdiv transpose consistency: dof {dof} is zero"
+            );
+        }
+    }
+
+    // ── RT1 triangle tests ────────────────────────────────────────────────
+
+    #[test]
+    fn construct_tri_rt1() {
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 1, 6).unwrap();
+        assert_eq!(basis.dim(), 2);
+        assert_eq!(basis.num_dof(), 8);
+        assert_eq!(basis.num_qpoints(), 6);
+        assert_eq!(basis.num_comp(), 2);
+    }
+
+    #[test]
+    fn tri_rt1_rt0_subspace() {
+        // The RT0 basis should be exactly the first 3 DOFs of the RT1 basis.
+        let basis_rt0 = RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 0, 6).unwrap();
+        let basis_rt1 = RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 1, 6).unwrap();
+
+        assert_eq!(basis_rt0.num_qpoints(), basis_rt1.num_qpoints());
+
+        for qpt in 0..basis_rt0.num_qpoints() {
+            for dof in 0..3 {
+                for d in 0..2 {
+                    let v0 = basis_rt0.interp[(qpt * 3 + dof) * 2 + d];
+                    let v1 = basis_rt1.interp[(qpt * 8 + dof) * 2 + d];
+                    assert!(
+                        (v0 - v1).abs() < TOL,
+                        "RT0/RT1 mismatch at qpt={qpt} dof={dof} d={d}: {v0} vs {v1}"
+                    );
+                }
+            }
+            for dof in 0..3 {
+                let d0 = basis_rt0.div_matrix[qpt * 3 + dof];
+                let d1 = basis_rt1.div_matrix[qpt * 8 + dof];
+                assert!(
+                    (d0 - d1).abs() < TOL,
+                    "RT0/RT1 div mismatch at qpt={qpt} dof={dof}: {d0} vs {d1}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tri_rt1_interior_zero_on_boundary() {
+        // Interior bubble functions (DOFs 6 and 7) should vanish at all vertices.
+        for &(x, y) in &[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)] {
+            let (phi, _div) = tri_rt1(x, y);
+            for dof in 6..8 {
+                let fx = phi[dof * 2];
+                let fy = phi[dof * 2 + 1];
+                assert!(
+                    fx.abs() < TOL && fy.abs() < TOL,
+                    "Interior DOF {dof} non-zero at vertex ({x},{y}): ({fx},{fy})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tri_rt1_div_varies() {
+        // RT1 divergences should not be constant (unlike RT0 where div=2 for all).
+        let (_phi1, div1) = tri_rt1(0.1, 0.2);
+        let (_phi2, div2) = tri_rt1(0.7, 0.1);
+
+        // RT0 DOFs 0-2 should still have constant div=2
+        for dof in 0..3 {
+            assert!(
+                (div1[dof] - div2[dof]).abs() < TOL && (div1[dof] - 2.0).abs() < TOL,
+                "RT0 DOF {dof}: div should be constant 2, got {} and {}",
+                div1[dof],
+                div2[dof]
+            );
+        }
+
+        // RT1 DOFs 3-7 should have spatially varying divergence
+        let mut any_varied = false;
+        for dof in 3..8 {
+            if (div1[dof] - div2[dof]).abs() > TOL {
+                any_varied = true;
+                break;
+            }
+        }
+        assert!(any_varied, "RT1 higher-order DOF divergences should vary with position");
+
+        // Directly verify analytic divergence formulas at a test point
+        let (_phi, div) = tri_rt1(0.3, 0.4);
+
+        // DOF 3 (edge 0 linear): div = 3(x-y) = 3*(-0.1) = -0.3
+        assert!((div[3] - 3.0 * (0.3 - 0.4)).abs() < TOL);
+
+        // DOF 4 (edge 1 linear): div = 3(x + 2y - 1) = 3*(0.3 + 0.8 - 1) = 3*0.1 = 0.3
+        assert!((div[4] - 3.0 * (0.3 + 0.8 - 1.0)).abs() < TOL);
+
+        // DOF 5 (edge 2 linear): div = 3(1 - 2x - y) = 3*(1 - 0.6 - 0.4) = 0
+        assert!((div[5] - 3.0 * (1.0 - 0.6 - 0.4)).abs() < TOL);
+
+        // DOF 6 (interior 1): div = 2x + y - 1 = 0.6 + 0.4 - 1 = 0
+        assert!((div[6] - (2.0 * 0.3 + 0.4 - 1.0)).abs() < TOL);
+
+        // DOF 7 (interior 2): div = 1 - x - 2y = 1 - 0.3 - 0.8 = -0.1
+        assert!((div[7] - (1.0 - 0.3 - 0.8)).abs() < TOL);
+    }
+
+    #[test]
+    fn tri_rt1_interp_forward_size() {
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 1, 6).unwrap();
+        let nelem = 2;
+        let ndof = 8;
+        let nqpts = 6;
+        let dim = 2;
+        let u = vec![0.0f64; nelem * ndof * dim];
+        let mut v = vec![0.0f64; nelem * nqpts * dim];
+        basis
+            .apply(nelem, false, EvalMode::Interp, &u, &mut v)
+            .unwrap();
+    }
+
+    #[test]
+    fn tri_rt1_hdiv_forward_size() {
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 1, 6).unwrap();
+        let nelem = 2;
+        let ndof = 8;
+        let nqpts = 6;
+        let dim = 2;
+        let u = vec![0.0f64; nelem * ndof * dim];
+        let mut v = vec![0.0f64; nelem * nqpts];
+        basis
+            .apply(nelem, false, EvalMode::HDiv, &u, &mut v)
+            .unwrap();
+    }
+
+    #[test]
+    fn tri_rt1_interp_transpose_consistency() {
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 1, 6).unwrap();
+        let nelem = 1;
+        let ndof = 8;
+        let nqpts = 6;
+        let dim = 2;
+
+        let mut u_dof = vec![0.0f64; nelem * ndof * dim];
+        for dof in 0..ndof {
+            u_dof[dof * dim] = (dof + 1) as f64;
+        }
+
+        let mut v_qpts = vec![0.0f64; nelem * nqpts * dim];
+        basis
+            .apply(nelem, false, EvalMode::Interp, &u_dof, &mut v_qpts)
+            .unwrap();
+
+        let mut u_dof_back = vec![0.0f64; nelem * ndof * dim];
+        basis
+            .apply(nelem, true, EvalMode::Interp, &v_qpts, &mut u_dof_back)
+            .unwrap();
+
+        for dof in 0..ndof {
+            let val = u_dof_back[dof * dim];
+            assert!(
+                val.abs() > TOL,
+                "RT1 transpose consistency: dof {dof} is zero"
             );
         }
     }
