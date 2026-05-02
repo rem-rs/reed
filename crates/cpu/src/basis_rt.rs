@@ -8,6 +8,7 @@
 //! | P0 triangle | Tri3 | 3 | RT0 (edge) |
 //! | P1 triangle | Tri3 | 8 | RT1 (edge + face) |
 //! | P0 tet | Tet4 | 4 | RT0 (face) |
+//! | P1 tet | Tet4 | 20 | RT1 (face + interior) |
 //!
 //! ## Reference elements
 //!
@@ -26,9 +27,11 @@
 //! Each ψ_i has unit normal flux through the face/edge opposite vertex i and
 //! zero flux through all other faces/edges.
 //!
-//! ### RT1 (order 1) — Triangle only
+//! ### RT1 (order 1) — Triangle and Tet
 //!
-//! Hierarchical basis with 8 DOFs: 2 per edge (6) + 2 interior (2).
+//! Hierarchical basis.
+//!
+//! **Triangle** — 8 DOFs: 2 per edge (6) + 2 interior (2).
 //!
 //! **Edge DOFs** (0–5):
 //! - ψ_k^{(0)} = x − x_k  (RT0, DOFs 0–2, constant normal flux on edge k)
@@ -38,6 +41,17 @@
 //! **Interior DOFs** (6–7): rot90 of Nédélec face functions (zero normal flux on edges)
 //! - ψ_int^{(1)} = rot90(λ_0 λ_1 ∇λ_2) = (−λ_0 λ_1, 0)
 //! - ψ_int^{(2)} = rot90(λ_0 λ_2 ∇λ_1) = (0, λ_0 λ_2)
+//!
+//! **Tetrahedron** — 20 DOFs: 3 per face (12) + 8 interior (8).
+//!
+//! **Face DOFs** (0–11):
+//! - ψ_i = 2(x − x_i)  (RT0, DOFs 0–3, constant normal flux on face i)
+//! - λ_j · ψ_i  (linear moment, DOFs 4–11, 2 per face × 4 faces)
+//!
+//! **Interior DOFs** (12–19): curl of Nédélec face functions (divergence-free)
+//! - For each of the 8 Nédélec face functions ψ = λ_a λ_b ∇λ_c,
+//!   ψ_int = curl(ψ) = ∇(λ_a λ_b) × ∇λ_c
+//!   These have div = 0 and zero normal flux on all faces.
 //!
 //! ## Memory layout
 //!
@@ -77,7 +91,7 @@ impl<T: Scalar> RaviartThomasBasis<T> {
     ///
     /// # Parameters
     /// * `topo` — `ElemTopology::Triangle` or `Tet`.
-    /// * `p`    — polynomial order. Triangle: 0 (RT0) or 1 (RT1); Tet: 0 only.
+    /// * `p`    — polynomial order. Triangle: 0 (RT0) or 1 (RT1); Tet: 0 (RT0) or 1 (RT1).
     /// * `q`    — number of quadrature points (see `tri_quadrature` / `tet_quadrature` for
     ///            valid values).
     ///
@@ -94,14 +108,15 @@ impl<T: Scalar> RaviartThomasBasis<T> {
                     )));
                 }
             },
-            ElemTopology::Tet => {
-                if p != 0 {
+            ElemTopology::Tet => match p {
+                0 => (3, 4),
+                1 => (3, 20),
+                _ => {
                     return Err(ReedError::Basis(format!(
-                        "RaviartThomasBasis: p={p} on Tet not supported; only p=0 (RT0)"
+                        "RaviartThomasBasis: p={p} on Tet not supported; use p=0 (RT0) or p=1 (RT1)"
                     )));
                 }
-                (3, 4)
-            }
+            },
             _ => {
                 if matches!(topo, ElemTopology::Pyramid | ElemTopology::Prism) {
                     return Err(ReedError::Basis(format!(
@@ -169,7 +184,12 @@ impl<T: Scalar> RaviartThomasBasis<T> {
                     }
                 }
                 3 => {
-                    let (phi, div) = tet_rt0(pt[0], pt[1], pt[2]);
+                    let (phi, div) = if order == 1 {
+                        tet_rt1(pt[0], pt[1], pt[2])
+                    } else {
+                        let (p, d) = tet_rt0(pt[0], pt[1], pt[2]);
+                        (p, d)
+                    };
                     for dof in 0..num_dof {
                         for d in 0..dim {
                             interp[(qi * num_dof + dof) * dim + d] =
@@ -639,6 +659,224 @@ fn tet_rt0(x: f64, y: f64, z: f64) -> (Vec<f64>, Vec<f64>) {
     (phi, div)
 }
 
+/// RT1 basis functions on the reference tetrahedron (20 DOFs).
+///
+/// Hierarchical construction: RT0 + linear face moments + interior bubbles.
+///
+/// **RT0 face DOFs** (0–3):
+/// ψ_i = 2(x − x_i) for each vertex i; div = 6 (constant).
+///
+/// **Linear face moments** (4–11):
+/// For face opposite vertex i, two linear moments λ_j ψ_i and λ_k ψ_i.
+/// - DOF 4: λ_1 ψ_0, DOF 5: λ_2 ψ_0  (face opposite v0)
+/// - DOF 6: λ_0 ψ_1, DOF 7: λ_2 ψ_1  (face opposite v1)
+/// - DOF 8: λ_0 ψ_2, DOF 9: λ_1 ψ_2  (face opposite v2)
+/// - DOF 10: λ_0 ψ_3, DOF 11: λ_1 ψ_3 (face opposite v3)
+///
+/// **Interior DOFs** (12–19):
+/// curl of Nédélec face functions (divergence-free).
+/// - DOF 12: curl(λ_1 λ_2 ∇λ_3) = (λ_1, −λ_2, 0)
+/// - DOF 13: curl(λ_1 λ_3 ∇λ_2) = (−λ_1, 0, λ_3)
+/// - DOF 14: curl(λ_0 λ_2 ∇λ_3) = (λ_0−λ_2, λ_2, 0)
+/// - DOF 15: curl(λ_0 λ_3 ∇λ_2) = (λ_3−λ_0, 0, −λ_3)
+/// - DOF 16: curl(λ_0 λ_1 ∇λ_3) = (−λ_1, λ_1−λ_0, 0)
+/// - DOF 17: curl(λ_0 λ_3 ∇λ_1) = (0, λ_0−λ_3, λ_3)
+/// - DOF 18: curl(λ_0 λ_1 ∇λ_2) = (λ_1, 0, λ_0−λ_1)
+/// - DOF 19: curl(λ_0 λ_2 ∇λ_1) = (0, −λ_2, λ_2−λ_0)
+///
+/// Returns `(phi[num_dof * 3], div[num_dof])`.
+fn tet_rt1(x: f64, y: f64, z: f64) -> (Vec<f64>, Vec<f64>) {
+    let verts: [[f64; 3]; 4] = [
+        [0.0, 0.0, 0.0], // x₀
+        [1.0, 0.0, 0.0], // x₁
+        [0.0, 1.0, 0.0], // x₂
+        [0.0, 0.0, 1.0], // x₃
+    ];
+    let num_dof = 20;
+    let dim = 3;
+    let factor = 2.0; // 1/(d·|T|) = 1/(3·1/6) = 2
+    let div_const = 6.0; // 1/|T| = 6
+
+    let lam = [1.0 - x - y - z, x, y, z]; // λ₀, λ₁, λ₂, λ₃
+
+    let mut phi = vec![0.0f64; num_dof * dim];
+    let mut div = vec![0.0f64; num_dof];
+
+    // ── RT0 face functions (DOFs 0–3) ────────────────────────────────────
+    // ψ_i = 2(x − x_i); div = 6
+    for dof in 0..4 {
+        for d in 0..dim {
+            phi[dof * dim + d] = factor * ([x, y, z][d] - verts[dof][d]);
+        }
+        div[dof] = div_const;
+    }
+
+    // ── Linear face moments (DOFs 4–11) ──────────────────────────────────
+    // div(λ_j ψ_i) = ∇λ_j · ψ_i + λ_j ∇·ψ_i
+
+    // Face opposite v0: use λ_1, λ_2
+    // DOF 4: λ_1 ψ_0
+    {
+        let dof = 4;
+        let rt0 = |d: usize| -> f64 { factor * ([x, y, z][d] - verts[0][d]) };
+        for d in 0..dim {
+            phi[dof * dim + d] = lam[1] * rt0(d);
+        }
+        // div = ∇λ_1 · ψ_0 + λ_1 · 6 = (1,0,0)·(2x,2y,2z) + 6x = 2x + 6x = 8x
+        div[dof] = 8.0 * x;
+    }
+    // DOF 5: λ_2 ψ_0
+    {
+        let dof = 5;
+        let rt0 = |d: usize| -> f64 { factor * ([x, y, z][d] - verts[0][d]) };
+        for d in 0..dim {
+            phi[dof * dim + d] = lam[2] * rt0(d);
+        }
+        // div = ∇λ_2 · ψ_0 + λ_2 · 6 = (0,1,0)·(2x,2y,2z) + 6y = 2y + 6y = 8y
+        div[dof] = 8.0 * y;
+    }
+
+    // Face opposite v1: use λ_0, λ_2
+    // DOF 6: λ_0 ψ_1
+    {
+        let dof = 6;
+        let rt0 = |d: usize| -> f64 { factor * ([x, y, z][d] - verts[1][d]) };
+        for d in 0..dim {
+            phi[dof * dim + d] = lam[0] * rt0(d);
+        }
+        // div = ∇λ_0 · ψ_1 + λ_0 · 6 = (-1,-1,-1)·(2x-2,2y,2z) + 6(1-x-y-z)
+        //     = -2x+2-2y-2z + 6-6x-6y-6z = 8-8x-8y-8z
+        div[dof] = 8.0 * (1.0 - x - y - z);
+    }
+    // DOF 7: λ_2 ψ_1
+    {
+        let dof = 7;
+        let rt0 = |d: usize| -> f64 { factor * ([x, y, z][d] - verts[1][d]) };
+        for d in 0..dim {
+            phi[dof * dim + d] = lam[2] * rt0(d);
+        }
+        // div = ∇λ_2 · ψ_1 + λ_2 · 6 = (0,1,0)·(2x-2,2y,2z) + 6y = 2y + 6y = 8y
+        div[dof] = 8.0 * y;
+    }
+
+    // Face opposite v2: use λ_0, λ_1
+    // DOF 8: λ_0 ψ_2
+    {
+        let dof = 8;
+        let rt0 = |d: usize| -> f64 { factor * ([x, y, z][d] - verts[2][d]) };
+        for d in 0..dim {
+            phi[dof * dim + d] = lam[0] * rt0(d);
+        }
+        // div = ∇λ_0 · ψ_2 + λ_0 · 6 = (-1,-1,-1)·(2x,2y-2,2z) + 6(1-x-y-z)
+        //     = -2x-2y+2-2z + 6-6x-6y-6z = 8-8x-8y-8z
+        div[dof] = 8.0 * (1.0 - x - y - z);
+    }
+    // DOF 9: λ_1 ψ_2
+    {
+        let dof = 9;
+        let rt0 = |d: usize| -> f64 { factor * ([x, y, z][d] - verts[2][d]) };
+        for d in 0..dim {
+            phi[dof * dim + d] = lam[1] * rt0(d);
+        }
+        // div = ∇λ_1 · ψ_2 + λ_1 · 6 = (1,0,0)·(2x,2y-2,2z) + 6x = 2x + 6x = 8x
+        div[dof] = 8.0 * x;
+    }
+
+    // Face opposite v3: use λ_0, λ_1
+    // DOF 10: λ_0 ψ_3
+    {
+        let dof = 10;
+        let rt0 = |d: usize| -> f64 { factor * ([x, y, z][d] - verts[3][d]) };
+        for d in 0..dim {
+            phi[dof * dim + d] = lam[0] * rt0(d);
+        }
+        // div = ∇λ_0 · ψ_3 + λ_0 · 6 = (-1,-1,-1)·(2x,2y,2z-2) + 6(1-x-y-z)
+        //     = -2x-2y-2z+2 + 6-6x-6y-6z = 8-8x-8y-8z
+        div[dof] = 8.0 * (1.0 - x - y - z);
+    }
+    // DOF 11: λ_1 ψ_3
+    {
+        let dof = 11;
+        let rt0 = |d: usize| -> f64 { factor * ([x, y, z][d] - verts[3][d]) };
+        for d in 0..dim {
+            phi[dof * dim + d] = lam[1] * rt0(d);
+        }
+        // div = ∇λ_1 · ψ_3 + λ_1 · 6 = (1,0,0)·(2x,2y,2z-2) + 6x = 2x + 6x = 8x
+        div[dof] = 8.0 * x;
+    }
+
+    // ── Interior bubble functions (DOFs 12–19) ────────────────────────────
+    // curl of Nédélec face functions: curl(λ_a λ_b ∇λ_c) = (λ_a ∇λ_b + λ_b ∇λ_a) × ∇λ_c
+    // All have div = 0.
+
+    // DOF 12: curl(λ_1 λ_2 ∇λ_3) = (λ_1, −λ_2, 0)
+    {
+        let dof = 12;
+        phi[dof * dim] = lam[1];
+        phi[dof * dim + 1] = -lam[2];
+        phi[dof * dim + 2] = 0.0;
+        div[dof] = 0.0;
+    }
+    // DOF 13: curl(λ_1 λ_3 ∇λ_2) = (−λ_1, 0, λ_3)
+    {
+        let dof = 13;
+        phi[dof * dim] = -lam[1];
+        phi[dof * dim + 1] = 0.0;
+        phi[dof * dim + 2] = lam[3];
+        div[dof] = 0.0;
+    }
+    // DOF 14: curl(λ_0 λ_2 ∇λ_3) = (λ_0−λ_2, λ_2, 0)
+    {
+        let dof = 14;
+        phi[dof * dim] = lam[0] - lam[2];
+        phi[dof * dim + 1] = lam[2];
+        phi[dof * dim + 2] = 0.0;
+        div[dof] = 0.0;
+    }
+    // DOF 15: curl(λ_0 λ_3 ∇λ_2) = (λ_3−λ_0, 0, −λ_3)
+    {
+        let dof = 15;
+        phi[dof * dim] = lam[3] - lam[0];
+        phi[dof * dim + 1] = 0.0;
+        phi[dof * dim + 2] = -lam[3];
+        div[dof] = 0.0;
+    }
+    // DOF 16: curl(λ_0 λ_1 ∇λ_3) = (−λ_1, λ_1−λ_0, 0)
+    {
+        let dof = 16;
+        phi[dof * dim] = -lam[1];
+        phi[dof * dim + 1] = lam[1] - lam[0];
+        phi[dof * dim + 2] = 0.0;
+        div[dof] = 0.0;
+    }
+    // DOF 17: curl(λ_0 λ_3 ∇λ_1) = (0, λ_0−λ_3, λ_3)
+    {
+        let dof = 17;
+        phi[dof * dim] = 0.0;
+        phi[dof * dim + 1] = lam[0] - lam[3];
+        phi[dof * dim + 2] = lam[3];
+        div[dof] = 0.0;
+    }
+    // DOF 18: curl(λ_0 λ_1 ∇λ_2) = (λ_1, 0, λ_0−λ_1)
+    {
+        let dof = 18;
+        phi[dof * dim] = lam[1];
+        phi[dof * dim + 1] = 0.0;
+        phi[dof * dim + 2] = lam[0] - lam[1];
+        div[dof] = 0.0;
+    }
+    // DOF 19: curl(λ_0 λ_2 ∇λ_1) = (0, −λ_2, λ_2−λ_0)
+    {
+        let dof = 19;
+        phi[dof * dim] = 0.0;
+        phi[dof * dim + 1] = -lam[2];
+        phi[dof * dim + 2] = lam[2] - lam[0];
+        div[dof] = 0.0;
+    }
+
+    (phi, div)
+}
+
 // ── utilities ─────────────────────────────────────────────────────────────────
 
 fn to_t<T: Scalar>(v: f64) -> ReedResult<T> {
@@ -792,8 +1030,9 @@ mod tests {
         assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 0, 3).is_ok());
         assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 1, 3).is_ok());
         assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Triangle, 2, 3).is_err());
-        // Tet: only p=0
-        assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).is_err());
+        // Tet: p=0 (RT0) and p=1 (RT1) are OK; higher p rejected
+        assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 0, 4).is_ok());
+        assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).is_ok());
         assert!(RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 2, 4).is_err());
     }
 
@@ -1224,6 +1463,221 @@ mod tests {
             assert!(
                 val.abs() > TOL,
                 "RT1 transpose consistency: dof {dof} is zero"
+            );
+        }
+    }
+
+    // ── RT1 tet tests ────────────────────────────────────────────────────
+
+    #[test]
+    fn construct_tet_rt1() {
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).unwrap();
+        assert_eq!(basis.dim(), 3);
+        assert_eq!(basis.num_dof(), 20);
+        assert_eq!(basis.num_qpoints(), 4);
+        assert_eq!(basis.num_comp(), 3);
+    }
+
+    #[test]
+    fn tet_rt1_rt0_subspace() {
+        // The RT0 basis should be exactly the first 4 DOFs of the RT1 basis.
+        let basis_rt0 = RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 0, 4).unwrap();
+        let basis_rt1 = RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).unwrap();
+
+        assert_eq!(basis_rt0.num_qpoints(), basis_rt1.num_qpoints());
+
+        for qpt in 0..basis_rt0.num_qpoints() {
+            for dof in 0..4 {
+                for d in 0..3 {
+                    let v0 = basis_rt0.interp[(qpt * 4 + dof) * 3 + d];
+                    let v1 = basis_rt1.interp[(qpt * 20 + dof) * 3 + d];
+                    assert!(
+                        (v0 - v1).abs() < TOL,
+                        "RT0/RT1 mismatch at qpt={qpt} dof={dof} d={d}: {v0} vs {v1}"
+                    );
+                }
+            }
+            for dof in 0..4 {
+                let d0 = basis_rt0.div_matrix[qpt * 4 + dof];
+                let d1 = basis_rt1.div_matrix[qpt * 20 + dof];
+                assert!(
+                    (d0 - d1).abs() < TOL,
+                    "RT0/RT1 div mismatch at qpt={qpt} dof={dof}: {d0} vs {d1}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tet_rt1_interior_divergence_free() {
+        // Interior bubble functions (DOFs 12–19) should have zero divergence
+        // at any point since they are curls of Nédélec face functions.
+        for &(x, y, z) in &[
+            (0.1, 0.2, 0.3),
+            (0.25, 0.25, 0.25),
+            (0.5, 0.1, 0.1),
+        ] {
+            let (_phi, div) = tet_rt1(x, y, z);
+            for dof in 12..20 {
+                assert!(
+                    div[dof].abs() < TOL,
+                    "Interior DOF {dof} div={} at ({x},{y},{z}), expected 0",
+                    div[dof]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tet_rt1_interior_from_nedelec_curl() {
+        // The RT1 interior functions are curl of Nedelec face functions.
+        // Verify this relationship analytically: for DOF 12 =
+        // curl(λ_1 λ_2 ∇λ_3), check that the vector matches the formula.
+        let (phi, _div) = tet_rt1(0.3, 0.2, 0.1);
+        // DOF 12: (λ_1, −λ_2, 0) = (0.3, -0.2, 0)
+        assert!((phi[12 * 3] - 0.3).abs() < TOL);
+        assert!((phi[12 * 3 + 1] - (-0.2)).abs() < TOL);
+        assert!((phi[12 * 3 + 2] - 0.0).abs() < TOL);
+        // DOF 13: (−λ_1, 0, λ_3) = (-0.3, 0, 0.1)
+        assert!((phi[13 * 3] - (-0.3)).abs() < TOL);
+        assert!((phi[13 * 3 + 1] - 0.0).abs() < TOL);
+        assert!((phi[13 * 3 + 2] - 0.1).abs() < TOL);
+        // DOF 18: (λ_1, 0, λ_0−λ_1) = (0.3, 0, 0.4-0.3) = (0.3, 0, 0.1)
+        assert!((phi[18 * 3] - 0.3).abs() < TOL);
+        assert!((phi[18 * 3 + 1] - 0.0).abs() < TOL);
+        assert!((phi[18 * 3 + 2] - 0.1).abs() < TOL);
+    }
+
+    #[test]
+    fn tet_rt1_div_varies() {
+        // RT0 DOFs 0-3 should have constant div=6.
+        // RT1 DOFs 4-11 should have spatially varying divergence.
+        // Interior DOFs 12-19 should have div=0.
+        let (_phi1, div1) = tet_rt1(0.1, 0.2, 0.3);
+        let (_phi2, div2) = tet_rt1(0.4, 0.1, 0.2);
+
+        for dof in 0..4 {
+            assert!(
+                (div1[dof] - 6.0).abs() < TOL && (div2[dof] - 6.0).abs() < TOL,
+                "RT0 DOF {dof}: div should be constant 6, got {} and {}",
+                div1[dof],
+                div2[dof]
+            );
+        }
+
+        let mut any_varied = false;
+        for dof in 4..12 {
+            if (div1[dof] - div2[dof]).abs() > TOL {
+                any_varied = true;
+                break;
+            }
+        }
+        assert!(any_varied, "Face moment divergences should vary with position");
+
+        // Verify analytic divergence for linear moments at a test point
+        let (_phi, div) = tet_rt1(0.3, 0.2, 0.1);
+
+        // DOF 4: λ_1 ψ_0 → div = 8x = 2.4
+        assert!((div[4] - 8.0 * 0.3).abs() < TOL);
+        // DOF 5: λ_2 ψ_0 → div = 8y = 1.6
+        assert!((div[5] - 8.0 * 0.2).abs() < TOL);
+        // DOF 6: λ_0 ψ_1 → div = 8(1-x-y-z) = 8*0.4 = 3.2
+        assert!((div[6] - 8.0 * (1.0 - 0.3 - 0.2 - 0.1)).abs() < TOL);
+        // DOF 7: λ_2 ψ_1 → div = 8y = 1.6
+        assert!((div[7] - 8.0 * 0.2).abs() < TOL);
+        // DOF 8: λ_0 ψ_2 → div = 8(1-x-y-z) = 3.2
+        assert!((div[8] - 8.0 * (1.0 - 0.3 - 0.2 - 0.1)).abs() < TOL);
+        // DOF 9: λ_1 ψ_2 → div = 8x = 2.4
+        assert!((div[9] - 8.0 * 0.3).abs() < TOL);
+        // DOF 10: λ_0 ψ_3 → div = 8(1-x-y-z) = 3.2
+        assert!((div[10] - 8.0 * (1.0 - 0.3 - 0.2 - 0.1)).abs() < TOL);
+        // DOF 11: λ_1 ψ_3 → div = 8x = 2.4
+        assert!((div[11] - 8.0 * 0.3).abs() < TOL);
+    }
+
+    #[test]
+    fn tet_rt1_hdiv_forward_rt0_subspace_constant() {
+        // With all RT0 DOFs set to 1.0 and all higher DOFs set to 0.0,
+        // divergence should be 4*6 = 24 at each qpt.
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).unwrap();
+        let nelem = 1;
+        let ndof = 20;
+        let nqpts = 4;
+        let dim = 3;
+        let mut u = vec![0.0f64; nelem * ndof * dim];
+        for dof in 0..4 {
+            u[dof * dim] = 1.0;
+        }
+        let mut v = vec![0.0f64; nelem * nqpts];
+        basis
+            .apply(nelem, false, EvalMode::HDiv, &u, &mut v)
+            .unwrap();
+        for qpt in 0..nqpts {
+            assert!(
+                (v[qpt] - 24.0).abs() < TOL,
+                "qpt {}: div = {}",
+                qpt,
+                v[qpt]
+            );
+        }
+    }
+
+    #[test]
+    fn tet_rt1_interp_forward_size() {
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).unwrap();
+        let nelem = 2;
+        let ndof = 20;
+        let nqpts = 4;
+        let dim = 3;
+        let u = vec![0.0f64; nelem * ndof * dim];
+        let mut v = vec![0.0f64; nelem * nqpts * dim];
+        basis
+            .apply(nelem, false, EvalMode::Interp, &u, &mut v)
+            .unwrap();
+    }
+
+    #[test]
+    fn tet_rt1_hdiv_forward_size() {
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).unwrap();
+        let nelem = 2;
+        let ndof = 20;
+        let nqpts = 4;
+        let dim = 3;
+        let u = vec![0.0f64; nelem * ndof * dim];
+        let mut v = vec![0.0f64; nelem * nqpts];
+        basis
+            .apply(nelem, false, EvalMode::HDiv, &u, &mut v)
+            .unwrap();
+    }
+
+    #[test]
+    fn tet_rt1_interp_transpose_consistency() {
+        let basis = RaviartThomasBasis::<f64>::new(ElemTopology::Tet, 1, 4).unwrap();
+        let nelem = 1;
+        let ndof = 20;
+        let nqpts = 4;
+        let dim = 3;
+
+        let mut u_dof = vec![0.0f64; nelem * ndof * dim];
+        for dof in 0..ndof {
+            u_dof[dof * dim] = (dof + 1) as f64;
+        }
+
+        let mut v_qpts = vec![0.0f64; nelem * nqpts * dim];
+        basis
+            .apply(nelem, false, EvalMode::Interp, &u_dof, &mut v_qpts)
+            .unwrap();
+
+        let mut u_dof_back = vec![0.0f64; nelem * ndof * dim];
+        basis
+            .apply(nelem, true, EvalMode::Interp, &v_qpts, &mut u_dof_back)
+            .unwrap();
+
+        for dof in 0..ndof {
+            let val = u_dof_back[dof * dim];
+            assert!(
+                val.abs() > TOL,
+                "Tet RT1 transpose consistency: dof {dof} is zero"
             );
         }
     }
