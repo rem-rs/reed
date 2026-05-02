@@ -1,9 +1,10 @@
 use reed::{
     CeedInt, CeedMatrix, CeedMatrixStorage, CompositeOperator, CpuOperator, CsrMatrix,
-    ElemRestrictionTrait, ElemTopology, EvalMode, FieldVector, OperatorAssembleKind, OperatorTrait,
-    OperatorTransposeRequest, QFunctionCategory, QFunctionContext, QFunctionField, QuadMode, Reed,
-    ReedError, ReedResult, TransposeMode, VectorTrait, QFUNCTION_INTERIOR_GALLERY_NAMES,
-    QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES,
+    ElemRestrictionTrait, ElemTopology, EvalMode, FieldVector, NeumannApply, OperatorAssembleKind,
+    OperatorTrait, OperatorTransposeRequest, QFunctionCategory, QFunctionContext, QFunctionField,
+    QFunctionTrait, QuadMode, Reed, ReedError, ReedResult, RobinApply, TransposeMode, VectorTrait,
+    QFUNCTION_EXTERIOR_GALLERY_NAMES, QFUNCTION_INTERIOR_GALLERY_NAMES,
+    QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES, q_function_by_name_exterior,
 };
 
 #[test]
@@ -4879,4 +4880,122 @@ fn test_rt_tet_rt0_construction() {
     assert_eq!(basis.dim(), 3);
     assert_eq!(basis.num_dof(), 4);
     assert_eq!(basis.num_comp(), 3);
+}
+
+#[test]
+fn test_exterior_gallery_names() {
+    assert!(QFUNCTION_EXTERIOR_GALLERY_NAMES.contains(&"NeumannApply"));
+    assert!(QFUNCTION_EXTERIOR_GALLERY_NAMES.contains(&"RobinApply"));
+    assert!(q_function_by_name_exterior("NeumannApply").is_some());
+    assert!(q_function_by_name_exterior("RobinApply").is_some());
+    assert!(q_function_by_name_exterior("Nonexistent").is_none());
+}
+
+#[test]
+fn test_neumann_qfunction_category() {
+    assert_eq!(
+        <NeumannApply as QFunctionTrait<f64>>::q_function_category(&NeumannApply::default()),
+        QFunctionCategory::Exterior
+    );
+}
+
+#[test]
+fn test_robin_exterior_category() {
+    assert_eq!(
+        <RobinApply as QFunctionTrait<f64>>::q_function_category(&RobinApply::default()),
+        QFunctionCategory::Exterior
+    );
+}
+
+#[test]
+fn test_exterior_operator_builds() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+
+    // Simple face restriction: 2 boundary faces, each with 2 DOFs (matching p=2 in 1D),
+    // both mapping to one parent element with 4 DOFs.
+    let face_restr = reed
+        .face_elem_restriction(
+            2,
+            2,
+            4,
+            1,
+            4,
+            vec![(0, 0), (0, 1)],
+            &[0, 2, 1, 3],
+            &[0, 1, 2, 3],
+            vec![0, 2, 1, 3],
+        )
+        .unwrap();
+
+    // 1D H1 Lagrange basis on edge faces: p=2 gives 2 nodes (= p^dim) matching ndof_per_face.
+    let basis = reed
+        .basis_tensor_h1_lagrange(1, 1, 2, 2, QuadMode::Gauss)
+        .unwrap();
+
+    let qf: Box<dyn QFunctionTrait<f64>> = Box::new(NeumannApply::default());
+
+    let op = reed
+        .operator_builder()
+        .qfunction(qf)
+        .field(
+            "v",
+            Some(&*face_restr),
+            Some(&*basis),
+            FieldVector::Active,
+        )
+        .build()
+        .unwrap();
+
+    // Apply with global vectors sized to match num_global_dof.
+    let x = reed
+        .vector_from_slice(&[1.0_f64, 2.0, 3.0, 4.0])
+        .unwrap();
+    let mut y = reed.vector(4).unwrap();
+    y.set_value(0.0).unwrap();
+    OperatorTrait::apply(&op, &*x, &mut *y).unwrap();
+}
+
+#[test]
+fn test_face_restriction_via_reed_api() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+
+    let num_faces = 2usize;
+    let ndof_face = 2usize;
+    let ndof_elem = 4usize;
+    let ncomp = 1usize;
+    let num_global_dof = 4usize;
+
+    let face_restr = reed
+        .face_elem_restriction(
+            num_faces,
+            ndof_face,
+            ndof_elem,
+            ncomp,
+            num_global_dof,
+            vec![(0, 0), (0, 1)],
+            &[0, 2, 1, 3],
+            &[0, 1, 2, 3],
+            vec![0, 2, 1, 3],
+        )
+        .unwrap();
+
+    assert_eq!(face_restr.num_elements(), 2);
+    assert_eq!(face_restr.num_dof_per_elem(), 2);
+    assert_eq!(face_restr.num_global_dof(), 4);
+    assert_eq!(face_restr.num_comp(), 1);
+
+    // Gather: global -> face-local
+    let u = vec![10.0_f64, 20.0, 30.0, 40.0];
+    let mut v = vec![0.0_f64; 4];
+    face_restr
+        .apply(TransposeMode::NoTranspose, &u, &mut v)
+        .unwrap();
+    assert_eq!(v, vec![10.0, 30.0, 20.0, 40.0]);
+
+    // Scatter: face-local -> global
+    let mut gathered = vec![0.0_f64; 4];
+    face_restr
+        .apply(TransposeMode::Transpose, &v, &mut gathered)
+        .unwrap();
+    assert_eq!(gathered, vec![10.0, 20.0, 30.0, 40.0]);
 }
