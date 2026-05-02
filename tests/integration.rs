@@ -4857,9 +4857,12 @@ fn test_rt_tri_rt0_constant_divergence() {
 #[test]
 fn test_hcurl_hdiv_factory_rejects_unsupported() {
     let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    // Supported orders: P2 (Nedelec) and RT1 are now implemented
+    assert!(reed.basis_hcurl_nedelec(ElemTopology::Triangle, 2, 3, QuadMode::Gauss).is_ok());
+    assert!(reed.basis_hdiv_raviart_thomas(ElemTopology::Triangle, 1, 3, QuadMode::Gauss).is_ok());
     // Unsupported p
-    assert!(reed.basis_hcurl_nedelec(ElemTopology::Triangle, 2, 3, QuadMode::Gauss).is_err());
-    assert!(reed.basis_hdiv_raviart_thomas(ElemTopology::Triangle, 1, 3, QuadMode::Gauss).is_err());
+    assert!(reed.basis_hcurl_nedelec(ElemTopology::Triangle, 3, 3, QuadMode::Gauss).is_err());
+    assert!(reed.basis_hdiv_raviart_thomas(ElemTopology::Triangle, 2, 3, QuadMode::Gauss).is_err());
     // Unsupported topology
     assert!(reed.basis_hcurl_nedelec(ElemTopology::Quad, 1, 3, QuadMode::Gauss).is_err());
 }

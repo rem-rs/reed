@@ -112,10 +112,16 @@ impl<T: Scalar> SimplexBasis<T> {
             (ElemTopology::Tet, 2) => (3, 10),
             (ElemTopology::Tet, 3) => (3, 20),
             _ => {
+                if matches!(topo, ElemTopology::Pyramid | ElemTopology::Prism) {
+                    return Err(ReedError::Basis(format!(
+                        "SimplexBasis: {:?} not implemented (requires collapsed-coordinate (Pyramid) or tensor×simplex (Prism/Wedge) transforms)",
+                        topo
+                    )));
+                }
                 return Err(ReedError::Basis(format!(
                     "SimplexBasis: unsupported (topology={:?}, poly={})",
                     topo, poly
-                )))
+                )));
             }
         };
 

@@ -54,8 +54,13 @@ pub enum NormType {
 ///
 /// **CPU `SimplexBasis` (`Reed::basis_h1_simplex`)**: H1 Lagrange is implemented on `Line` / `Triangle` / `Tet`.
 /// **Tensor-product `LagrangeBasis` (`Reed::basis_tensor_h1_lagrange`)**: `Quad` (`dim=2`), `Hex` (`dim=3`), etc.
-/// **`Pyramid` / `Prism`**: enum placeholders for libCEED mesh-type alignment; Nedelec / Raviart-Thomas style H(curl)/H(div)
-/// elements are not provided yet, and current vector-field `EvalMode::Div` / `Curl` is still based on H1 vector components.
+/// **`Pyramid` / `Prism`**: enum placeholders for libCEED mesh-type alignment. Neither topology is implemented
+/// in any basis type yet. Pyramid requires collapsed-coordinate transforms (mapping a hex to a 5-vertex pyramid);
+/// Prism (wedge) requires a tensor×simplex product basis. Basis constructors return `ReedError::Basis` with
+/// a specific message for these topologies.
+///
+/// **H(curl) / H(div)**: Nédélec (`basis_hcurl_nedelec`) and Raviart-Thomas (`basis_hdiv_raviart_thomas`)
+/// elements are available on `Triangle` / `Tet` (v1: P1/RT0 only; P2/P3 and RT1/RT2 are planned).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElemTopology {
     Line,
