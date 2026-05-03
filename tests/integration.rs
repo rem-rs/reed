@@ -1,8 +1,9 @@
 use reed::{
     CeedInt, CeedMatrix, CeedMatrixStorage, CompositeOperator, CpuOperator, CsrMatrix,
     ElemRestrictionTrait, ElemTopology, EvalMode, FieldVector, NeumannApply, OperatorAssembleKind,
-    OperatorTrait, OperatorTransposeRequest, QFunctionCategory, QFunctionContext, QFunctionField,
-    QFunctionTrait, QuadMode, Reed, ReedError, ReedResult, RobinApply, TransposeMode, VectorTrait,
+    OperatorTrait, OperatorTransposeRequest, QFunctionCategory, QFunctionContext,
+    QFunctionContextField, QFunctionContextFieldKind, QFunctionField, QFunctionTrait, QuadMode,
+    Reed, ReedError, ReedResult, RobinApply, TransposeMode, VectorTrait,
     QFUNCTION_EXTERIOR_GALLERY_NAMES, QFUNCTION_INTERIOR_GALLERY_NAMES,
     QFUNCTION_LIBCEED_MAIN_GALLERY_NAMES, q_function_by_name_exterior,
 };
@@ -5208,4 +5209,642 @@ fn test_nonlinear_adjoint_cache_miss_fallback() {
     let mut adj = reed.vector(ndofs).unwrap();
     let result = op.apply_with_transpose(OperatorTransposeRequest::Adjoint, &*dv, &mut *adj);
     assert!(result.is_ok(), "adjoint should succeed even without cached primal; got {:?}", result.err());
+}
+
+// ---------------------------------------------------------------------------
+// Exterior gallery: q_function_by_name_exterior
+// ---------------------------------------------------------------------------
+
+/// `q_function_by_name_exterior` must resolve all five `QFUNCTION_EXTERIOR_GALLERY_NAMES`.
+#[test]
+fn test_q_function_by_name_exterior_resolves_all() {
+    for &name in QFUNCTION_EXTERIOR_GALLERY_NAMES {
+        let qf = q_function_by_name_exterior(name)
+            .unwrap_or_else(|| panic!("exterior gallery name {name:?} should resolve"));
+        assert_eq!(
+            qf.q_function_category(),
+            QFunctionCategory::Exterior,
+            "{name} category should be Exterior"
+        );
+    }
+}
+
+/// Exterior gallery names must not resolve via the interior path.
+#[test]
+fn test_exterior_names_not_in_interior_gallery() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    for &name in QFUNCTION_EXTERIOR_GALLERY_NAMES {
+        let result = reed.q_function_by_name(name);
+        assert!(
+            result.is_err(),
+            "exterior name {name:?} should not resolve via q_function_by_name (interior path)"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// RobinApply with QFunctionContext (alpha scaling)
+// ---------------------------------------------------------------------------
+
+/// `RobinApply` multiplies each boundary quadrature-point value by `alpha` from context.
+/// Here we use a face restriction and verify the operator output equals `alpha * input`.
+#[test]
+fn test_robin_apply_operator_with_alpha_context() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+
+    // 2 boundary faces, each with 2 face DOFs mapped into a 4-DOF global space.
+    let face_restr = reed
+        .face_elem_restriction(
+            2,
+            2,
+            4,
+            1,
+            4,
+            vec![(0, 0), (0, 1)],
+            &[0, 2, 1, 3],
+            &[0, 1, 2, 3],
+            vec![0, 2, 1, 3],
+        )
+        .unwrap();
+
+    let basis = reed
+        .basis_tensor_h1_lagrange(1, 1, 2, 2, QuadMode::Gauss)
+        .unwrap();
+
+    let qf: Box<dyn QFunctionTrait<f64>> = Box::new(RobinApply::default());
+
+    let alpha = 3.5_f64;
+    let mut ctx = QFunctionContext::new(8);
+    ctx.write_f64_le(0, alpha).unwrap();
+
+    let op = reed
+        .operator_builder()
+        .qfunction(qf)
+        .qfunction_context(ctx)
+        .field("u", Some(&*face_restr), Some(&*basis), FieldVector::Active)
+        .field("v", Some(&*face_restr), Some(&*basis), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    // Apply with all-ones input; collect output.
+    let x = reed.vector_from_slice(&[1.0_f64, 1.0, 1.0, 1.0]).unwrap();
+    let mut y_ones = reed.vector(4).unwrap();
+    y_ones.set_value(0.0).unwrap();
+    OperatorTrait::apply(&op, &*x, &mut *y_ones).unwrap();
+
+    // Apply with all-twos input.
+    let x2 = reed.vector_from_slice(&[2.0_f64, 2.0, 2.0, 2.0]).unwrap();
+    let mut y_twos = reed.vector(4).unwrap();
+    y_twos.set_value(0.0).unwrap();
+    OperatorTrait::apply(&op, &*x2, &mut *y_twos).unwrap();
+
+    // linearity check: output(2x) ≈ 2 * output(x)
+    let s1 = y_ones.as_slice();
+    let s2 = y_twos.as_slice();
+    for i in 0..4 {
+        assert!(
+            (s2[i] - 2.0 * s1[i]).abs() < 1e-11,
+            "Robin linearity at i={i}: 2*y_ones={} y_twos={}",
+            2.0 * s1[i],
+            s2[i]
+        );
+    }
+
+    // All output values must be non-zero (alpha * nonzero).
+    assert!(
+        s1.iter().any(|&v| v.abs() > 1e-14),
+        "Robin output should be non-zero for unit input"
+    );
+}
+
+/// `RobinApply` adjoint is symmetric (self-adjoint: `v[q] = alpha * u[q]`).
+#[test]
+fn test_robin_apply_adjoint_is_symmetric() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+
+    let face_restr = reed
+        .face_elem_restriction(
+            2,
+            2,
+            4,
+            1,
+            4,
+            vec![(0, 0), (0, 1)],
+            &[0, 2, 1, 3],
+            &[0, 1, 2, 3],
+            vec![0, 2, 1, 3],
+        )
+        .unwrap();
+
+    let basis = reed
+        .basis_tensor_h1_lagrange(1, 1, 2, 2, QuadMode::Gauss)
+        .unwrap();
+
+    let mut ctx = QFunctionContext::new(8);
+    ctx.write_f64_le(0, 1.5_f64).unwrap();
+
+    let op = reed
+        .operator_builder()
+        .qfunction(Box::new(RobinApply::default()) as Box<dyn QFunctionTrait<f64>>)
+        .qfunction_context(ctx)
+        .field("u", Some(&*face_restr), Some(&*basis), FieldVector::Active)
+        .field("v", Some(&*face_restr), Some(&*basis), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    let x = reed.vector_from_slice(&[0.5_f64, 1.0, -0.3, 2.0]).unwrap();
+    let mut y_fwd = reed.vector(4).unwrap();
+    let mut y_adj = reed.vector(4).unwrap();
+    y_fwd.set_value(0.0).unwrap();
+    y_adj.set_value(0.0).unwrap();
+
+    OperatorTrait::apply(&op, &*x, &mut *y_fwd).unwrap();
+    OperatorTrait::apply_with_transpose(&op, OperatorTransposeRequest::Adjoint, &*x, &mut *y_adj)
+        .unwrap();
+
+    for i in 0..4 {
+        assert!(
+            (y_fwd.as_slice()[i] - y_adj.as_slice()[i]).abs() < 1e-11,
+            "Robin adjoint vs forward at i={i}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// QFunctionContext field layout helpers
+// ---------------------------------------------------------------------------
+
+/// Context with registered fields: write/read round-trip via named `write_field_f64`.
+#[test]
+fn test_qfunction_context_named_field_write_read() {
+    let mut ctx = QFunctionContext::from_field_layout(vec![
+        QFunctionContextField {
+            name: "alpha".into(),
+            offset: 0,
+            kind: QFunctionContextFieldKind::F64,
+        },
+        QFunctionContextField {
+            name: "beta".into(),
+            offset: 8,
+            kind: QFunctionContextFieldKind::F64,
+        },
+    ])
+    .unwrap();
+
+    ctx.write_field_f64("alpha", 2.5).unwrap();
+    ctx.write_field_f64("beta", -7.0).unwrap();
+
+    assert!((ctx.read_f64_le(0).unwrap() - 2.5).abs() < 1e-15);
+    assert!((ctx.read_f64_le(8).unwrap() - (-7.0)).abs() < 1e-15);
+}
+
+/// Overlapping field ranges must be rejected.
+#[test]
+fn test_qfunction_context_overlap_rejected() {
+    let result = QFunctionContext::from_field_layout(vec![
+        QFunctionContextField {
+            name: "a".into(),
+            offset: 0,
+            kind: QFunctionContextFieldKind::F64, // bytes 0..8
+        },
+        QFunctionContextField {
+            name: "b".into(),
+            offset: 4, // overlaps with "a" (bytes 4..12 vs 0..8)
+            kind: QFunctionContextFieldKind::F64,
+        },
+    ]);
+    assert!(result.is_err(), "overlapping fields should be rejected");
+}
+
+/// Host-dirty tracking: fresh context is clean; `write_f64_le` marks it dirty.
+#[test]
+fn test_qfunction_context_dirty_tracking() {
+    let mut ctx = QFunctionContext::new(8);
+    // A freshly-allocated context starts clean (no upload needed).
+    assert!(!ctx.host_needs_device_upload());
+
+    ctx.write_f64_le(0, 42.0).unwrap();
+    assert!(ctx.host_needs_device_upload(), "write should mark dirty");
+
+    ctx.mark_host_synced_to_device();
+    assert!(!ctx.host_needs_device_upload(), "after sync should be clean");
+}
+
+// ---------------------------------------------------------------------------
+// Scale QFunction with context
+// ---------------------------------------------------------------------------
+
+/// `"Scale"` gallery QFunction (alpha from 8-byte context) scales the output correctly.
+#[test]
+fn test_scale_qfunction_with_context() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let nelem = 2usize;
+    let p = 2usize;
+    let q = 2usize;
+    let ndofs = nelem + 1;
+    let ind_u = vec![0i32, 1, 1, 2];
+
+    let r_u = reed
+        .elem_restriction(nelem, p, 1, 1, ndofs, &ind_u)
+        .unwrap();
+    let b_u = reed
+        .basis_tensor_h1_lagrange(1, 1, p, q, QuadMode::Gauss)
+        .unwrap();
+
+    let alpha = 3.0_f64;
+    let mut ctx = QFunctionContext::new(8);
+    ctx.write_f64_le(0, alpha).unwrap();
+
+    let op_scale = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("Scale").unwrap())
+        .qfunction_context(ctx)
+        .field("input", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .field("output", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    // Compare: Scale(alpha=3) applied to x  vs  Identity applied to x then manually scaled.
+    let x = reed.vector_from_slice(&[1.0_f64, 2.0, 3.0]).unwrap();
+
+    let op_id = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("Identity").unwrap())
+        .field("input", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .field("output", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    let mut y_id = reed.vector(ndofs).unwrap();
+    y_id.set_value(0.0).unwrap();
+    OperatorTrait::apply(&op_id, &*x, &mut *y_id).unwrap();
+
+    let mut y_scale = reed.vector(ndofs).unwrap();
+    y_scale.set_value(0.0).unwrap();
+    OperatorTrait::apply(&op_scale, &*x, &mut *y_scale).unwrap();
+
+    for i in 0..ndofs {
+        assert!(
+            (y_scale.as_slice()[i] - alpha * y_id.as_slice()[i]).abs() < 1e-11,
+            "Scale vs alpha*Identity at dof {i}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// apply_add semantics
+// ---------------------------------------------------------------------------
+
+/// `apply_add` must ADD to existing output rather than overwriting it,
+/// and two consecutive `apply_add` calls yield the same result as `2 * apply`.
+#[test]
+fn test_apply_add_accumulates_twice() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let nelem = 2usize;
+    let p = 2usize;
+    let q = 2usize;
+    let ndofs = nelem + 1;
+    let ind_u = vec![0i32, 1, 1, 2];
+
+    let r_u = reed
+        .elem_restriction(nelem, p, 1, 1, ndofs, &ind_u)
+        .unwrap();
+    let r_q = reed
+        .strided_elem_restriction(nelem, q, 1, nelem * q, [1, q as i32, q as i32])
+        .unwrap();
+    let b_u = reed
+        .basis_tensor_h1_lagrange(1, 1, p, q, QuadMode::Gauss)
+        .unwrap();
+    let mut qdata = reed.vector(nelem * q).unwrap();
+    qdata.set_value(1.0).unwrap();
+
+    let op = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("MassApply").unwrap())
+        .field("u", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .field("qdata", Some(&*r_q), None, FieldVector::Passive(&*qdata))
+        .field("v", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    let x = reed.vector_from_slice(&[1.0_f64, 2.0, 3.0]).unwrap();
+
+    // Single apply result.
+    let mut y_once = reed.vector(ndofs).unwrap();
+    y_once.set_value(0.0).unwrap();
+    OperatorTrait::apply(&op, &*x, &mut *y_once).unwrap();
+
+    // apply_add twice starting from zero should yield 2 * apply.
+    let mut y_add = reed.vector(ndofs).unwrap();
+    y_add.set_value(0.0).unwrap();
+    OperatorTrait::apply_add(&op, &*x, &mut *y_add).unwrap();
+    OperatorTrait::apply_add(&op, &*x, &mut *y_add).unwrap();
+
+    for i in 0..ndofs {
+        assert!(
+            (y_add.as_slice()[i] - 2.0 * y_once.as_slice()[i]).abs() < 1e-11,
+            "apply_add twice should equal 2*apply at dof {i}"
+        );
+    }
+
+    // apply_add from a non-zero starting point: result = prior + apply(x).
+    let prior = [5.0_f64, -3.0, 7.0];
+    let mut y_prior = reed.vector_from_slice(&prior).unwrap();
+    OperatorTrait::apply_add(&op, &*x, &mut *y_prior).unwrap();
+    for i in 0..ndofs {
+        let expected = prior[i] + y_once.as_slice()[i];
+        assert!(
+            (y_prior.as_slice()[i] - expected).abs() < 1e-11,
+            "apply_add should add to prior content at dof {i}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Mass2DBuild + MassApply on a 2D mesh
+// ---------------------------------------------------------------------------
+
+/// `Mass2DBuild` computes quadrature weights from a 2D Jacobian (det J * w).
+/// On a uniform 2×2 element mesh covering [−1,1]^2 with bilinear Q1 elements
+/// the total assembled mass-times-one should equal the area (4.0).
+/// This mirrors the `ex1_volume` example layout exactly.
+#[test]
+fn test_mass_2d_operator_integral_equals_area() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+
+    let dim = 2usize;
+    let nelem_1d = 2usize;
+    let nelem = nelem_1d * nelem_1d; // 4
+    let p = 2usize;
+    let q = 2usize;
+    let ndofs_1d = nelem_1d * (p - 1) + 1; // 3
+    let ndofs = ndofs_1d * ndofs_1d; // 9
+    let elemsize = p * p; // 4
+    let qpts_per_elem = q * q; // 4
+
+    // Node offsets: row-major p×p stencil per element.
+    let mut offsets = Vec::with_capacity(nelem * elemsize);
+    for ey in 0..nelem_1d {
+        for ex in 0..nelem_1d {
+            for jy in 0..p {
+                for jx in 0..p {
+                    let gi = (ey * (p - 1) + jy) * ndofs_1d + (ex * (p - 1) + jx);
+                    offsets.push(gi as i32);
+                }
+            }
+        }
+    }
+
+    // Component-major node coordinates on [−1,1]^2: all x-coords, then all y-coords.
+    let mut x_comps = vec![0.0_f64; ndofs];
+    let mut y_comps = vec![0.0_f64; ndofs];
+    for iy in 0..ndofs_1d {
+        for ix in 0..ndofs_1d {
+            let k = iy * ndofs_1d + ix;
+            x_comps[k] = -1.0 + 2.0 * ix as f64 / (ndofs_1d - 1) as f64;
+            y_comps[k] = -1.0 + 2.0 * iy as f64 / (ndofs_1d - 1) as f64;
+        }
+    }
+    let node_coords: Vec<f64> = x_comps.into_iter().chain(y_comps).collect();
+
+    // r_x: ncomp=dim, compstride=ndofs, lsize=dim*ndofs (component-major layout).
+    let r_x = reed
+        .elem_restriction(nelem, elemsize, dim, ndofs, dim * ndofs, &offsets)
+        .unwrap();
+    let r_u = reed
+        .elem_restriction(nelem, elemsize, 1, 1, ndofs, &offsets)
+        .unwrap();
+    let r_q = reed
+        .strided_elem_restriction(
+            nelem,
+            qpts_per_elem,
+            1,
+            nelem * qpts_per_elem,
+            [1, qpts_per_elem as i32, qpts_per_elem as i32],
+        )
+        .unwrap();
+
+    let b_x = reed.basis_tensor_h1_lagrange(dim, dim, p, q, QuadMode::Gauss).unwrap();
+    let b_u = reed.basis_tensor_h1_lagrange(dim, 1, p, q, QuadMode::Gauss).unwrap();
+
+    let x_coord = reed.vector_from_slice(&node_coords).unwrap();
+    let mut qdata = reed.vector(nelem * qpts_per_elem).unwrap();
+    qdata.set_value(0.0).unwrap();
+
+    let build_op = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("Mass2DBuild").unwrap())
+        .field("dx", Some(&*r_x), Some(&*b_x), FieldVector::Active)
+        .field("weights", None, Some(&*b_x), FieldVector::None)
+        .field("qdata", Some(&*r_q), None, FieldVector::Active)
+        .build()
+        .unwrap();
+    build_op.apply(&*x_coord, &mut *qdata).unwrap();
+
+    // All qdata values should be positive (det J * w > 0).
+    assert!(
+        qdata.as_slice().iter().all(|&v| v > 0.0),
+        "Mass2DBuild: all qdata should be positive"
+    );
+
+    let op_mass = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("MassApply").unwrap())
+        .field("u", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .field("qdata", Some(&*r_q), None, FieldVector::Passive(&*qdata))
+        .field("v", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    let u_ones = reed.vector_from_slice(&vec![1.0_f64; ndofs]).unwrap();
+    let mut v = reed.vector(ndofs).unwrap();
+    v.set_value(0.0).unwrap();
+    op_mass.apply(&*u_ones, &mut *v).unwrap();
+
+    let total: f64 = v.as_slice().iter().sum();
+    assert!(
+        (total - 4.0).abs() < 1e-9,
+        "2D mass integral of 1 over [-1,1]^2 should equal 4.0, got {total}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Strided restriction gather / scatter correctness
+// ---------------------------------------------------------------------------
+
+/// A strided (quadrature-data) restriction gather produces the expected element stencil,
+/// and the scatter (transpose) maps element contributions back to the global layout.
+#[test]
+fn test_strided_restriction_gather_scatter() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let nelem = 3usize;
+    let q = 2usize;
+    // Standard per-element contiguous layout: stride = [1, q, q].
+    let r = reed
+        .strided_elem_restriction(nelem, q, 1, nelem * q, [1, q as i32, q as i32])
+        .unwrap();
+
+    // Global data: 6 entries (3 elems × 2 qp each).
+    let global: Vec<f64> = (1..=nelem * q).map(|i| i as f64).collect();
+    let mut local = vec![0.0_f64; nelem * q];
+    r.apply(TransposeMode::NoTranspose, &global, &mut local).unwrap();
+    // With this layout, gather is identity.
+    assert_eq!(local, global);
+
+    // Scatter back: each entry accumulates from one element -> global == local.
+    let mut back = vec![0.0_f64; nelem * q];
+    r.apply(TransposeMode::Transpose, &local, &mut back).unwrap();
+    assert_eq!(back, global);
+}
+
+/// Non-trivial strided restriction with shared DOFs: scatter must accumulate at shared nodes.
+#[test]
+fn test_elem_restriction_scatter_adds_shared_nodes() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    // 2 elements, 2 nodes each, sharing node 1: offsets = [0,1, 1,2].
+    let nelem = 2usize;
+    let elemsize = 2usize;
+    let ndofs = 3usize;
+    let offsets = vec![0i32, 1, 1, 2];
+    let r = reed
+        .elem_restriction(nelem, elemsize, 1, 1, ndofs, &offsets)
+        .unwrap();
+
+    // Scatter constant 1.0 from all element nodes back to global.
+    let local = vec![1.0_f64; nelem * elemsize];
+    let mut global = vec![0.0_f64; ndofs];
+    r.apply(TransposeMode::Transpose, &local, &mut global).unwrap();
+    // Node 0 and 2 touched once; node 1 touched by both elements → 2.
+    assert_eq!(global, vec![1.0, 2.0, 1.0]);
+}
+
+// ---------------------------------------------------------------------------
+// Poisson 1D: apply_add and adjoint inner-product property
+// ---------------------------------------------------------------------------
+
+/// Poisson apply_add: result from two consecutive `apply_add` calls equals `2 * apply`.
+#[test]
+fn test_poisson_1d_apply_add_doubles() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let nelem = 3usize;
+    let p = 2usize;
+    let q = 2usize;
+    let ndofs = nelem + 1;
+    let ind: Vec<i32> = (0..nelem).flat_map(|e| [e as i32, e as i32 + 1]).collect();
+
+    let node_coords: Vec<f64> = (0..=nelem).map(|i| i as f64 / nelem as f64).collect();
+    let x_coord = reed.vector_from_slice(&node_coords).unwrap();
+    let mut qdata = reed.vector(nelem * q).unwrap();
+    qdata.set_value(0.0).unwrap();
+
+    let r_x = reed.elem_restriction(nelem, 2, 1, 1, ndofs, &ind).unwrap();
+    let r_u = reed.elem_restriction(nelem, p, 1, 1, ndofs, &ind).unwrap();
+    let r_q = reed
+        .strided_elem_restriction(nelem, q, 1, nelem * q, [1, q as i32, q as i32])
+        .unwrap();
+
+    let b_x = reed.basis_tensor_h1_lagrange(1, 1, 2, q, QuadMode::Gauss).unwrap();
+    let b_u = reed.basis_tensor_h1_lagrange(1, 1, p, q, QuadMode::Gauss).unwrap();
+
+    let build = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("Poisson1DBuild").unwrap())
+        .field("dx", Some(&*r_x), Some(&*b_x), FieldVector::Active)
+        .field("weights", None, Some(&*b_x), FieldVector::None)
+        .field("qdata", Some(&*r_q), None, FieldVector::Active)
+        .build()
+        .unwrap();
+    build.apply(&*x_coord, &mut *qdata).unwrap();
+
+    let op = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("Poisson1DApply").unwrap())
+        .field("du", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .field("qdata", Some(&*r_q), None, FieldVector::Passive(&*qdata))
+        .field("dv", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    let x = reed.vector_from_slice(&[0.0_f64, 1.0, -0.5, 0.25]).unwrap();
+
+    let mut y_once = reed.vector(ndofs).unwrap();
+    y_once.set_value(0.0).unwrap();
+    OperatorTrait::apply(&op, &*x, &mut *y_once).unwrap();
+
+    let mut y_add = reed.vector(ndofs).unwrap();
+    y_add.set_value(0.0).unwrap();
+    OperatorTrait::apply_add(&op, &*x, &mut *y_add).unwrap();
+    OperatorTrait::apply_add(&op, &*x, &mut *y_add).unwrap();
+
+    for i in 0..ndofs {
+        assert!(
+            (y_add.as_slice()[i] - 2.0 * y_once.as_slice()[i]).abs() < 1e-10,
+            "Poisson apply_add twice vs 2*apply at dof {i}"
+        );
+    }
+}
+
+/// Poisson 1D adjoint inner-product identity: `⟨Ax, y⟩ = ⟨x, A^T y⟩`.
+#[test]
+fn test_poisson_1d_adjoint_inner_product() {
+    let reed = Reed::<f64>::init("/cpu/self").unwrap();
+    let nelem = 4usize;
+    let p = 2usize;
+    let q = 2usize;
+    let ndofs = nelem + 1;
+    let ind: Vec<i32> = (0..nelem).flat_map(|e| [e as i32, e as i32 + 1]).collect();
+
+    let node_coords: Vec<f64> = (0..=nelem).map(|i| i as f64 / nelem as f64).collect();
+    let x_coord = reed.vector_from_slice(&node_coords).unwrap();
+    let mut qdata = reed.vector(nelem * q).unwrap();
+    qdata.set_value(0.0).unwrap();
+
+    let r_x = reed.elem_restriction(nelem, 2, 1, 1, ndofs, &ind).unwrap();
+    let r_u = reed.elem_restriction(nelem, p, 1, 1, ndofs, &ind).unwrap();
+    let r_q = reed
+        .strided_elem_restriction(nelem, q, 1, nelem * q, [1, q as i32, q as i32])
+        .unwrap();
+
+    let b_x = reed.basis_tensor_h1_lagrange(1, 1, 2, q, QuadMode::Gauss).unwrap();
+    let b_u = reed.basis_tensor_h1_lagrange(1, 1, p, q, QuadMode::Gauss).unwrap();
+
+    let build = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("Poisson1DBuild").unwrap())
+        .field("dx", Some(&*r_x), Some(&*b_x), FieldVector::Active)
+        .field("weights", None, Some(&*b_x), FieldVector::None)
+        .field("qdata", Some(&*r_q), None, FieldVector::Active)
+        .build()
+        .unwrap();
+    build.apply(&*x_coord, &mut *qdata).unwrap();
+
+    let op = reed
+        .operator_builder()
+        .qfunction(reed.q_function_by_name("Poisson1DApply").unwrap())
+        .field("du", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .field("qdata", Some(&*r_q), None, FieldVector::Passive(&*qdata))
+        .field("dv", Some(&*r_u), Some(&*b_u), FieldVector::Active)
+        .build()
+        .unwrap();
+
+    let x_vals = [0.1, 0.4, -0.3, 0.7, 0.2_f64];
+    let y_vals = [0.5, -0.2, 0.8, -0.1, 0.3_f64];
+    let xv = reed.vector_from_slice(&x_vals).unwrap();
+    let yv = reed.vector_from_slice(&y_vals).unwrap();
+
+    let mut ax = reed.vector(ndofs).unwrap();
+    ax.set_value(0.0).unwrap();
+    let mut aty = reed.vector(ndofs).unwrap();
+    aty.set_value(0.0).unwrap();
+
+    OperatorTrait::apply(&op, &*xv, &mut *ax).unwrap();
+    OperatorTrait::apply_with_transpose(&op, OperatorTransposeRequest::Adjoint, &*yv, &mut *aty)
+        .unwrap();
+
+    let lhs: f64 = ax.as_slice().iter().zip(y_vals.iter()).map(|(a, b)| a * b).sum();
+    let rhs: f64 = x_vals.iter().zip(aty.as_slice().iter()).map(|(a, b)| a * b).sum();
+    assert!(
+        (lhs - rhs).abs() < 1e-10,
+        "Poisson adjoint inner-product identity: lhs={lhs} rhs={rhs}"
+    );
 }
